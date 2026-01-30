@@ -8,7 +8,7 @@ N='\e[0m'
 
 VER_FILE="$HOME/.fntm/version.txt"
 RAW_CPP_URL="https://raw.githubusercontent.com/itoryon/meow/main/chat.cpp"
-
+mkdir -p ~/.fntm && touch ~/.fntm/version.txt
 echo -e "${G}[*] Проверка обновлений meoww...${N}"
 
 # 1. Проверка свободного места
