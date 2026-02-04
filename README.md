@@ -3,7 +3,7 @@
 1. Установить termux api, termux widget, termux
 2. Скачать файлы: install, install2.sh
 3. Выполните команду
-cp storage/downloads/install ~ && cp storage/downloads/install2.sh ~ && cd && chmod +x install && chmod +x install2.sh  
+mv storage/downloads/install.txt ~install && mv storage/downloads/install2.sh.txt ~install2.sh && cd && chmod +x install && chmod +x install2.sh  
 6. Запустить файл install2.sh (установит нужные зависимости)
 7. Запустить файл install
    
