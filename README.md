@@ -10,6 +10,7 @@ cp storage/downloads/install ~ && cp storage/downloads/install2.sh ~ && cd && ch
    
    mkdir -p ~/.shortcuts && printf '#!/data/data/com.termux/files/usr/bin/bash\nexport TERM=xterm-256color\ntermux-wake-lock\nstty cols 80 rows 24\n~/meoww\n' > ~/.shortcuts/chat && chmod +x ~/.shortcuts/chat
    
+   
 
 10. После можете сделать termux widget (если не появился chat то перезагрузите виджет.
 11. Запускаете из виджета или из ~ директории командой ./meoww
