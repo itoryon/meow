@@ -53,7 +53,8 @@ if [ "$DO_INSTALL" = true ]; then
     if clang++ -O3 chat.cpp -lcurl -lncurses -lcrypto -lpthread -o ~/meoww; then
         echo "$REMOTE_VER" > "$VER_FILE"
         echo -e "${G}[OK] Готово! Версия v$REMOTE_VER установлена.${N}"
-        echo mkdir -p ~/.shortcuts && printf '#!/data/data/com.termux/files/usr/bin/bash\nexport TERM=xterm-256color\ntermux-wake-lock\nstty cols 80 rows 24\n~/meoww\n' > ~/.shortcuts/chat && chmod +x ~/.shortcuts/chat
+        echo mkdir -p ~/.shortcuts && printf '#!/data/data/com.termux/files/usr/bin/bash\nexport TERM=xterm-256color\ntermux-wake-lock\nreset\n~/meoww\n' > ~/.shortcuts/chat && chmod +x ~/.shortcuts/chat
+
         rm chat.cpp
     else
         echo -e "${R}[-] Ошибка сборки!${N}"
