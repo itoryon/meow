@@ -262,7 +262,7 @@ int main() {
             if (input_buf == "/update") {
                 endwin();
                 cout << "\e[34m[*] Запуск инсталлера для обновления...\e[0m" << endl;
-                system("bash ~/install2.sh");
+                system("bash ~/install");
                 exit(0);
             }
             if (!input_buf.empty()) {
