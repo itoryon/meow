@@ -14,11 +14,12 @@
 #include <openssl/sha.h>
 #include <clocale>
 #include <algorithm>
+#include <set>
 
 using namespace std;
 using json = nlohmann::json;
 
-const string VERSION = "1.3_beta";
+const string VERSION = "1.9_stable";
 const string SB_URL = "https://ilszhdmqxsoixcefeoqa.supabase.co/rest/v1/messages";
 const string SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc";
 const int PUA_START = 0xE000;
@@ -29,24 +30,14 @@ WINDOW *chat_win, *input_win;
 mutex mtx;
 
 vector<string> chat_history;
+set<string> known_ids; // Защита от дублей
 int scroll_pos = 0;
 int current_offset = 0;
 const int LOAD_STEP = 15;
 bool need_redraw = true;
+bool is_loading = false;
 
 // --- UTILS ---
-string escape_shell(string text) {
-    string res = "";
-    for (char c : text) { if (c == '\'') res += "'\\''"; else res += c; }
-    return res;
-}
-
-void notify(string author, string text) {
-    if (author == my_nick || author.empty()) return;
-    string cmd = "termux-notification --title 'FNTM: " + escape_shell(author) + "' --content '" + escape_shell(text) + "' --id fntm_ch --sound";
-    system(cmd.c_str());
-}
-
 string aes_256(string text, string pass, bool enc) {
     unsigned char key[32], iv[16] = {0};
     SHA256((unsigned char*)pass.c_str(), pass.length(), key);
@@ -111,10 +102,36 @@ string request(string method, int limit, int offset, string body = "") {
     return resp;
 }
 
+// Загрузка СТАРЫХ сообщений (при скролле вверх)
+void load_older_messages_async() {
+    if (is_loading) return;
+    is_loading = true;
+    thread([](){
+        current_offset += LOAD_STEP;
+        string r = request("GET", LOAD_STEP, current_offset);
+        if (!r.empty() && r[0] == '[') {
+            auto data = json::parse(r);
+            lock_guard<mutex> l(mtx);
+            for (auto& item : data) {
+                string id = to_string(item.value("id", 0));
+                if (known_ids.find(id) == known_ids.end()) {
+                    string s = item.value("sender", "???"), p = from_z(item.value("payload", ""));
+                    string d = aes_256(p, my_pass, false);
+                    chat_history.insert(chat_history.begin(), "[" + s + "]: " + d);
+                    known_ids.insert(id);
+                }
+            }
+            need_redraw = true;
+        }
+        is_loading = false;
+    }).detach();
+}
+
 void redraw_chat() {
     int my, mx; getmaxyx(chat_win, my, mx);
     werase(chat_win);
     lock_guard<mutex> l(mtx);
+    
     vector<string> wrapped;
     for (const auto& msg : chat_history) {
         string cur = ""; int w = 0;
@@ -126,30 +143,34 @@ void redraw_chat() {
         }
         if (!cur.empty()) wrapped.push_back(cur);
     }
+    
     int total = wrapped.size();
     if (total > 0) {
+        if (scroll_pos >= total) scroll_pos = total - 1;
         int end = total - 1 - scroll_pos;
         int start = max(0, end - (my - 1));
-        for (int i = start, row = 0; i <= end && i < total; i++) mvwaddstr(chat_win, row++, 0, wrapped[i].c_str());
+        for (int i = start, row = 0; i <= end && i < total; i++) {
+            mvwaddstr(chat_win, row++, 0, wrapped[i].c_str());
+        }
     }
     wrefresh(chat_win);
 }
 
 void refresh_loop() {
     while(true) {
-        string r = request("GET", 5, 0);
+        string r = request("GET", 10, 0); // Проверяем верхушку базы
         if (!r.empty() && r[0] == '[') {
             auto data = json::parse(r);
             bool upd = false;
             lock_guard<mutex> l(mtx);
             for (int i = data.size()-1; i >= 0; i--) {
-  //количество прогружаемых сообщений
-              string id = to_string(data[i].value("id", 5));
-                if (stoll(id) > (last_id.empty() ? 0 : stoll(last_id))) {
+                string id = to_string(data[i].value("id", 0));
+                if (known_ids.find(id) == known_ids.end()) {
                     string snd = data[i].value("sender", ""), d = aes_256(from_z(data[i].value("payload", "")), my_pass, false);
                     chat_history.push_back("[" + snd + "]: " + d);
-                    if (!last_id.empty() && snd != my_nick) notify(snd, d);
-                    last_id = id; upd = true;
+                    known_ids.insert(id);
+                    last_id = id;
+                    upd = true;
                 }
             }
             if (upd) need_redraw = true;
@@ -182,56 +203,29 @@ int main() {
     keypad(input_win, TRUE); nodelay(input_win, TRUE);
 
     thread(refresh_loop).detach();
+    
     string input_buf = "";
-
     while(true) {
-        // Проверяем реальный размер окна ncurses
-        int cur_my, cur_mx; getmaxyx(stdscr, cur_my, cur_mx);
-        if (cur_mx != mx || cur_my != my) {
-            mx = cur_mx; my = cur_my;
-            wresize(chat_win, my - 5, mx);
-            wresize(input_win, 5, mx);
-            mvwin(input_win, my - 5, 0);
-            need_redraw = true;
-        }
+        if (need_redraw) { redraw_chat(); need_redraw = false; }
 
         werase(input_win); box(input_win, 0, 0);
         mvwprintw(input_win, 1, 1, "[%s@%s] v%s", my_nick.c_str(), my_room.c_str(), VERSION.c_str());
-        
-        // Рендеринг ввода
-        string prompt = "> ";
-        string full_content = prompt + input_buf;
-        int inner_w = mx - 2; 
-        if (inner_w < 1) inner_w = 1;
-
-        vector<string> v_lines;
-        for (size_t i = 0; i < full_content.length(); i += inner_w) {
-            v_lines.push_back(full_content.substr(i, inner_w));
-        }
-        if (full_content.empty() || full_content.length() % inner_w == 0) v_lines.push_back("");
-
-        int max_view = 3;
-        int start_l = (v_lines.size() > (size_t)max_view) ? (int)v_lines.size() - max_view : 0;
-
-        for (int i = 0; i < max_view && (start_l + i) < (int)v_lines.size(); i++) {
-            mvwaddstr(input_win, 2 + i, 1, v_lines[start_l + i].c_str());
-        }
-
-        // Позиция курсора
-        int cur_y = 2 + ((int)v_lines.size() - 1 - start_l);
-        int cur_x = 1 + (full_content.length() % inner_w);
-        wmove(input_win, cur_y, cur_x);
+        mvwprintw(input_win, 2, 1, "> %s", input_buf.c_str());
         wrefresh(input_win);
 
-        if (need_redraw) { redraw_chat(); need_redraw = false; }
-
         int ch = wgetch(input_win);
-        if (ch == KEY_UP) { scroll_pos++; need_redraw = true; }
+        if (ch == ERR) { this_thread::sleep_for(chrono::milliseconds(20)); continue; }
+
+        if (ch == KEY_UP) { 
+            scroll_pos++;
+            need_redraw = true;
+            // Если мы долистали почти до верха того, что загружено — подгружаем еще старых
+            if (scroll_pos + 5 > (int)chat_history.size()) {
+                load_older_messages_async();
+            }
+        }
         else if (ch == KEY_DOWN) { if (scroll_pos > 0) { scroll_pos--; need_redraw = true; } }
         else if (ch == '\n' || ch == 10 || ch == 13) {
-            if (input_buf == "/exit") break;
-            if (input_buf == "/reset") { remove(cfg.c_str()); break; }
-            if (input_buf == "/update") { endwin(); system("bash ~/install"); exit(0); }
             if (!input_buf.empty()) {
                 string m = input_buf; input_buf = "";
                 thread([m](){
@@ -250,9 +244,6 @@ int main() {
             }
         }
         else if (ch >= 32 && ch < 10000) { input_buf += (char)ch; }
-        
-        this_thread::sleep_for(chrono::milliseconds(15));
     }
-    endwin();
-    return 0;
+    endwin(); return 0;
 }
