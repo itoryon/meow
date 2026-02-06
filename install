@@ -54,6 +54,7 @@ if [ "$DO_INSTALL" = true ]; then
         echo "$REMOTE_VER" > "$VER_FILE"
         echo -e "${G}[OK] Готово! Версия v$REMOTE_VER установлена.${N}"
         echo mkdir -p ~/.shortcuts && printf '#!/data/data/com.termux/files/usr/bin/bash\nexport TERM=xterm-256color\ntermux-wake-lock\nreset\n~/meoww\n' > ~/.shortcuts/chat && chmod +x ~/.shortcuts/chat
+        echo pkill meoww
 
         rm chat.cpp
     else
