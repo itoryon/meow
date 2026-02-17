@@ -19,7 +19,8 @@
 
 using namespace std;
 using json = nlohmann::json;
-const string VERSION = "5.0";
+
+string VERSION = "5.0"; 
 
 // --- НАСТРОЙКИ ---
 const string SB_URL = "https://ilszhdmqxsoixcefeoqa.supabase.co/rest/v1/messages";
@@ -31,12 +32,15 @@ vector<pair<string, string>> chat_history;
 set<string> known_ids;
 mutex mtx;
 
-// --- КРИПТО (ТВОЙ КОД) ---
+// --- КРИПТО ---
 string aes_256(string text, string pass, bool enc) {
     unsigned char key[32], iv[16] = {0};
     SHA256((unsigned char*)pass.c_str(), pass.length(), key);
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    int len, flen; unsigned char out[1024*1024*2]; // 2MB буфер для фото
+    int len, flen; 
+    // Буфер 4MB для Base64 фото
+    unsigned char* out = new unsigned char[1024*1024*4]; 
+    
     if(enc) {
         EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
         EVP_EncryptUpdate(ctx, out, &len, (unsigned char*)text.c_str(), text.length());
@@ -44,10 +48,16 @@ string aes_256(string text, string pass, bool enc) {
     } else {
         EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
         EVP_DecryptUpdate(ctx, out, &len, (unsigned char*)text.c_str(), text.length());
-        if(EVP_DecryptFinal_ex(ctx, out + len, &flen) <= 0) { EVP_CIPHER_CTX_free(ctx); return "ERR_DECRYPT"; }
+        if(EVP_DecryptFinal_ex(ctx, out + len, &flen) <= 0) { 
+            EVP_CIPHER_CTX_free(ctx); 
+            delete[] out;
+            return "ERR_DECRYPT"; 
+        }
     }
+    string result((char*)out, len + flen);
     EVP_CIPHER_CTX_free(ctx);
-    return string((char*)out, len + flen);
+    delete[] out;
+    return result;
 }
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ---
@@ -96,35 +106,36 @@ string request(string method, int limit, int offset, string body = "") {
     return resp;
 }
 
-// --- ФОНОВОЕ ОБНОВЛЕНИЕ ---
 void update_loop() {
     while(true) {
         string r = request("GET", 20, 0);
         if (!r.empty() && r[0] == '[') {
-            auto data = json::parse(r);
-            lock_guard<mutex> l(mtx);
-            for (int i = data.size()-1; i >= 0; i--) {
-                string id = to_string(data[i].value("id", 0));
-                if (known_ids.find(id) == known_ids.end()) {
-                    string snd = data[i].value("sender", "");
-                    string payload = data[i].value("payload", "");
-                    string decoded = aes_256(from_z(payload), my_pass, false);
-                    chat_history.push_back({id, "[" + snd + "]: " + decoded});
-                    known_ids.insert(id);
+            try {
+                auto data = json::parse(r);
+                lock_guard<mutex> l(mtx);
+                for (int i = data.size()-1; i >= 0; i--) {
+                    string id = to_string(data[i].value("id", 0));
+                    if (known_ids.find(id) == known_ids.end()) {
+                        string snd = data[i].value("sender", "");
+                        string payload = data[i].value("payload", "");
+                        string decoded = aes_256(from_z(payload), my_pass, false);
+                        chat_history.push_back({id, "[" + snd + "]: " + decoded});
+                        known_ids.insert(id);
+                    }
                 }
-            }
+            } catch(...) {}
             if(chat_history.size() > 50) chat_history.erase(chat_history.begin(), chat_history.begin() + 10);
         }
         this_thread::sleep_for(chrono::seconds(3));
     }
 }
 
-// --- MAIN ---
 int main() {
+    setlocale(LC_ALL, "");
     cfg = string(getenv("HOME")) + "/.fntm/config.dat";
     ifstream fi(cfg);
     if(fi) { getline(fi, my_nick); getline(fi, my_pass); getline(fi, my_room); }
-    else { cout << "Запусти консольную версию один раз для настройки!" << endl; return 1; }
+    else { cout << "Run console version first to configure!" << endl; return 1; }
 
     thread(update_loop).detach();
 
@@ -136,74 +147,75 @@ int main() {
         <html>
         <head>
             <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Termux Web Chat</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>Meoww Web</title>
             <style>
-                body { font-family: -apple-system, sans-serif; background: #000; color: #eee; margin: 0; display: flex; flex-direction: column; height: 100vh; }
-                #chat { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
-                .msg { background: #222; padding: 10px; border-radius: 12px; max-width: 85%; align-self: flex-start; word-wrap: break-word; }
-                .msg.me { align-self: flex-end; background: #007bff; }
-                .msg b { color: #aaa; font-size: 0.8em; display: block; margin-bottom: 4px; }
-                .msg img { max-width: 100%; border-radius: 8px; display: block; margin-top: 5px; cursor: pointer; }
-                #input-bar { background: #111; padding: 10px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #333; }
-                input[type="text"] { flex: 1; background: #222; border: none; color: white; padding: 12px; border-radius: 20px; outline: none; }
-                #file-btn { font-size: 20px; cursor: pointer; user-select: none; }
-                button#send-btn { background: #007bff; color: white; border: none; padding: 10px 18px; border-radius: 20px; font-weight: bold; }
+                body { font-family: sans-serif; background: #0a0a0a; color: #fff; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+                #chat { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+                .msg { background: #1e1e1e; padding: 10px; border-radius: 15px; max-width: 85%; align-self: flex-start; line-height: 1.4; }
+                .msg.me { align-self: flex-end; background: #0056b3; }
+                .msg b { color: #888; font-size: 0.75em; display: block; margin-bottom: 3px; }
+                .msg img { max-width: 100%; border-radius: 10px; margin-top: 5px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+                #bar { background: #111; padding: 12px; display: flex; gap: 10px; align-items: center; border-top: 1px solid #222; }
+                input[type="text"] { flex: 1; background: #222; border: none; color: #fff; padding: 12px; border-radius: 25px; outline: none; }
+                #cam { font-size: 24px; cursor: pointer; }
+                button { background: #007bff; color: #fff; border: none; padding: 10px 20px; border-radius: 25px; font-weight: bold; }
             </style>
         </head>
         <body>
             <div id="chat"></div>
-            <div id="input-bar">
-                <div id="file-btn">📷</div>
-                <input type="file" id="fileInput" accept="image/*" style="display:none">
-                <input type="text" id="msgInput" placeholder="Сообщение...">
-                <button id="send-btn" onclick="sendMsg()">></button>
+            <div id="bar">
+                <div id="cam">📷</div>
+                <input type="file" id="fIn" accept="image/*" style="display:none">
+                <input type="text" id="mIn" placeholder="Сообщение...">
+                <button onclick="send()">></button>
             </div>
             <script>
-                const myNick = ")"; + my_nick + R"(";
+                const nick = ")"; + my_nick + R"(";
                 async function load() {
-                    const r = await fetch('/get_messages');
-                    const msgs = await r.json();
-                    const chat = document.getElementById('chat');
-                    const shouldScroll = chat.scrollTop + chat.offsetHeight >= chat.scrollHeight - 50;
-                    chat.innerHTML = '';
-                    msgs.forEach(m => {
-                        let content = m.text;
-                        if(content.startsWith('img:')) {
-                            content = `<img src="data:image/png;base64,${content.substring(4)}" onclick="window.open(this.src)">`;
-                        }
-                        const isMe = m.sender === myNick ? 'me' : '';
-                        chat.innerHTML += `<div class="msg ${isMe}"><b>${m.sender}</b>${content}</div>`;
-                    });
-                    if(shouldScroll) chat.scrollTop = chat.scrollHeight;
+                    try {
+                        const r = await fetch('/get_messages');
+                        const msgs = await r.json();
+                        const chat = document.getElementById('chat');
+                        const isBottom = chat.scrollTop + chat.offsetHeight >= chat.scrollHeight - 60;
+                        chat.innerHTML = '';
+                        msgs.forEach(m => {
+                            let text = m.text;
+                            if(text.startsWith('img:')) {
+                                text = `<img src="data:image/png;base64,${text.substring(4)}" onclick="window.open(this.src)">`;
+                            }
+                            const isMe = m.sender === nick ? 'me' : '';
+                            chat.innerHTML += `<div class="msg ${isMe}"><b>${m.sender}</b>${text}</div>`;
+                        });
+                        if(isBottom) chat.scrollTop = chat.scrollHeight;
+                    } catch(e) {}
                 }
-                async function sendMsg() {
-                    const input = document.getElementById('msgInput');
-                    const text = input.value;
-                    if(!text) return;
-                    input.value = '';
-                    await fetch('/send', { method: 'POST', body: text });
+                async function send() {
+                    const i = document.getElementById('mIn');
+                    if(!i.value) return;
+                    const val = i.value; i.value = '';
+                    await fetch('/send', { method: 'POST', body: val });
                     load();
                 }
-                document.getElementById('file-btn').onclick = () => document.getElementById('fileInput').click();
-                document.getElementById('fileInput').onchange = async (e) => {
+                document.getElementById('cam').onclick = () => document.getElementById('fIn').click();
+                document.getElementById('fIn').onchange = (e) => {
                     const file = e.target.files[0];
                     if(!file) return;
                     const reader = new FileReader();
                     reader.onload = async () => {
-                        const base64 = reader.result.split(',')[1];
-                        await fetch('/send', { method: 'POST', body: 'img:' + base64 });
+                        const b64 = reader.result.split(',')[1];
+                        await fetch('/send', { method: 'POST', body: 'img:' + b64 });
                     };
                     reader.readAsDataURL(file);
                 };
-                document.getElementById('msgInput').onkeypress = (e) => { if(e.key === 'Enter') sendMsg(); };
-                setInterval(load, 2000);
+                document.getElementById('mIn').onkeypress = (e) => { if(e.key==='Enter') send(); };
+                setInterval(load, 2500);
                 load();
             </script>
         </body>
         </html>
         )";
-        res.set_content(html, "text/html");
+        res.set_content(html, "text/html; charset=utf-8");
     });
 
     svr.Get("/get_messages", [](const httplib::Request&, httplib::Response& res) {
@@ -212,25 +224,23 @@ int main() {
         for (auto& p : chat_history) {
             size_t pos = p.second.find("]: ");
             if(pos != string::npos) {
-                string s = p.second.substr(1, pos - 1);
-                string t = p.second.substr(pos + 3);
-                j.push_back({{"sender", s}, {"text", t}});
+                j.push_back({{"sender", p.second.substr(1, pos - 1)}, {"text", p.second.substr(pos + 3)}});
             }
         }
         res.set_content(j.dump(), "application/json");
     });
 
     svr.Post("/send", [](const httplib::Request& req, httplib::Response& res) {
-        string msg = req.body;
-        thread([msg](){
-            string encrypted = to_z(aes_256(msg, my_pass, true));
-            json j = {{"sender", my_nick}, {"payload", encrypted}, {"chat_key", my_room}};
+        string m = req.body;
+        thread([m](){
+            string enc = to_z(aes_256(m, my_pass, true));
+            json j = {{"sender", my_nick}, {"payload", enc}, {"chat_key", my_room}};
             request("POST", 0, 0, j.dump());
         }).detach();
         res.set_content("ok", "text/plain");
     });
 
-    cout << "Server started at http://localhost:8080" << endl;
+    cout << "Web Server: http://localhost:8080" << endl;
     svr.listen("0.0.0.0", 8080);
     return 0;
 }
