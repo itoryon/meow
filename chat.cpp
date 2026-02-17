@@ -20,7 +20,7 @@
 using namespace std;
 using json = nlohmann::json;
 
-string VERSION = "8.8"; 
+string VERSION = "8.81"; 
 
 const string SB_URL = "https://ilszhdmqxsoixcefeoqa.supabase.co/rest/v1/messages";
 const string SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc";
@@ -31,6 +31,7 @@ vector<pair<string, string>> chat_history;
 set<string> known_ids;
 mutex mtx;
 
+// --- КРИПТО ---
 string aes_256(string text, string pass, bool enc) {
     unsigned char key[32], iv[16] = {0};
     SHA256((unsigned char*)pass.c_str(), pass.length(), key);
@@ -99,7 +100,7 @@ string request(string method, int limit, int offset, string body = "") {
 
 void update_loop() {
     while(true) {
-        string r = request("GET", 20, 0);
+        string r = request("GET", 25, 0);
         if (!r.empty() && r[0] == '[') {
             try {
                 auto data = json::parse(r);
@@ -114,10 +115,10 @@ void update_loop() {
                         known_ids.insert(id);
                     }
                 }
+                if(chat_history.size() > 60) chat_history.erase(chat_history.begin(), chat_history.begin() + 10);
             } catch(...) {}
-            if(chat_history.size() > 50) chat_history.erase(chat_history.begin(), chat_history.begin() + 10);
         }
-        this_thread::sleep_for(chrono::seconds(3));
+        this_thread::sleep_for(chrono::seconds(2));
     }
 }
 
@@ -131,38 +132,42 @@ int main() {
     httplib::Server svr;
 
     svr.Get("/", [](const httplib::Request&, httplib::Response& res) {
-        string html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>";
-        html += "body{font-family:sans-serif;background:#000;color:#eee;margin:0;display:flex;flex-direction:column;height:100vh;}";
-        html += "#chat{flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:10px;}";
-        html += ".msg{background:#222;padding:10px;border-radius:12px;max-width:85%;align-self:flex-start;}";
-        html += ".msg.me{align-self:flex-end;background:#007bff;}";
+        string html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'><style>";
+        html += "body{font-family:sans-serif;background:#000;color:#eee;margin:0;display:flex;flex-direction:column;height:100vh;overflow:hidden;}";
+        html += "#chat{flex:1;overflow-y:auto;padding:15px;display:flex;flex-direction:column;gap:10px;padding-bottom:100px;}";
+        html += ".msg{background:#222;padding:10px;border-radius:12px;max-width:85%;align-self:flex-start;word-wrap:break-word;}";
+        html += ".msg.me{align-self:flex-end;background:#007bff;color:#fff;}";
+        html += ".msg b{font-size:0.8em;color:#aaa;display:block;}";
         html += ".msg img{max-width:100%;border-radius:8px;display:block;margin-top:5px;}";
-        html += "#bar{background:#111;padding:10px;display:flex;gap:10px;border-top:1px solid #333;}";
-        html += "input[type='text']{flex:1;background:#222;border:none;color:white;padding:12px;border-radius:20px;outline:none;}";
-        html += "button{background:#007bff;color:white;border:none;padding:10px 15px;border-radius:20px;}";
+        html += "#bar{background:#111;padding:15px;display:flex;gap:10px;border-top:1px solid #333;position:fixed;bottom:20px;left:10px;right:10px;border-radius:30px;box-shadow:0 -5px 20px rgba(0,0,0,0.5);z-index:100;}";
+        html += "input[type='text']{flex:1;background:transparent;border:none;color:white;padding:5px;outline:none;font-size:16px;}";
+        html += "button{background:#007bff;color:white;border:none;padding:8px 15px;border-radius:20px;font-weight:bold;}";
         html += "</style></head><body><div id='chat'></div><div id='bar'>";
         html += "<div id='cam' style='cursor:pointer;font-size:24px'>📷</div>";
         html += "<input type='file' id='fIn' accept='image/*' style='display:none'>";
-        html += "<input type='text' id='mIn' placeholder='Message...'>";
+        html += "<input type='text' id='mIn' placeholder='Сообщение...'>";
         html += "<button onclick='send()'>OK</button></div><script>";
         
         html += "const myNick = '" + my_nick + "';";
         
         html += "async function load(){";
-        html += "const r=await fetch('/get_messages');const msgs=await r.json();";
-        html += "const chat=document.getElementById('chat');const isBot=chat.scrollTop+chat.offsetHeight>=chat.scrollHeight-50;";
-        html += "chat.innerHTML='';msgs.forEach(m=>{";
+        html += "try{const r=await fetch('/get_messages');const msgs=await r.json();";
+        html += "const chat=document.getElementById('chat');";
+        html += "const isBot=chat.scrollTop+chat.offsetHeight>=chat.scrollHeight-100;";
+        html += "let h='';msgs.forEach(m=>{";
         html += "let c=m.text;if(c.startsWith('img:')) c='<img src=\"data:image/png;base64,'+c.substring(4)+'\" onclick=\"window.open(this.src)\">';";
-        html += "const isMe=m.sender===myNick?'me':'';";
-        html += "chat.innerHTML+='<div class=\"msg '+isMe+'\"><b>'+m.sender+'</b><br>'+c+'</div>';";
-        html += "});if(isBot)chat.scrollTop=chat.scrollHeight;}";
+        html += "const cl=m.sender===myNick?'msg me':'msg';";
+        html += "h+='<div class=\"'+cl+'\"><b>'+m.sender+'</b>'+c+'</div>';";
+        html += "});chat.innerHTML=h;if(isBot)chat.scrollTop=chat.scrollHeight;}catch(e){}";
+        html += "}";
         
         html += "async function send(){const i=document.getElementById('mIn');if(!i.value)return;const v=i.value;i.value='';await fetch('/send',{method:'POST',body:v});load();}";
         
         html += "document.getElementById('cam').onclick=()=>document.getElementById('fIn').click();";
         html += "document.getElementById('fIn').onchange=(e)=>{const f=e.target.files[0];const rd=new FileReader();rd.onload=async()=>{";
         html += "const b=rd.result.split(',')[1];await fetch('/send',{method:'POST',body:'img:'+b});};rd.readAsDataURL(f);};";
-        html += "setInterval(load,2500);load();</script></body></html>";
+        html += "document.getElementById('mIn').onkeypress=(e)=>{if(e.key==='Enter')send();};";
+        html += "setInterval(load,2000);load();</script></body></html>";
         
         res.set_content(html, "text/html; charset=utf-8");
     });
@@ -172,7 +177,9 @@ int main() {
         lock_guard<mutex> l(mtx);
         for (auto& p : chat_history) {
             size_t pos = p.second.find("]: ");
-            if(pos != string::npos) j.push_back({{"sender", p.second.substr(1, pos - 1)}, {"text", p.second.substr(pos + 3)}});
+            if(pos != string::npos) {
+                j.push_back({{"sender", p.second.substr(1, pos - 1)}, {"text", p.second.substr(pos + 3)}});
+            }
         }
         res.set_content(j.dump(), "application/json");
     });
