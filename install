@@ -6,70 +6,65 @@ Y='\e[33m'
 R='\e[31m'
 N='\e[0m'
 
-VER_FILE="$HOME/.fntm/version.txt"
-RAW_CPP_URL="https://raw.githubusercontent.com/itoryon/meow/main/chat.cpp"
-mkdir -p ~/.fntm && touch ~/.fntm/version.txt
+VER_FILE="$HOME/.fntm/version_txt"
+RAW_GO_URL="https://raw.githubusercontent.com/itoryon/meow/main/main.go"
+mkdir -p ~/.fntm
 
-echo -e "${G}[*] Проверка обновлений meoww Web...${N}"
+echo -e "${G}[*] Проверка обновлений Meow GUI (Golang)...${N}"
 
-# 1. Проверка места
-FREE_MB=$(df /data | awk 'NR==2 {print int($4 / 1024)}')
-if [ "$FREE_MB" -lt 100 ]; then
-    echo -e "${R}[!] Мало места: $FREE_MB MB. Нужно 100 MB!${N}"
-    exit 1
+# 1. Проверка системных пакетов
+if ! command -v go &> /dev/null; then
+    echo -e "${B}[*] Установка Golang и графических библиотек...${N}"
+    pkg update -y
+    pkg install -y golang termux-api pkg-config x11-repo libx11 libxcursor libxinerama libxrandr libxi mesa
 fi
 
 # 2. Локальная версия
 [ -f "$VER_FILE" ] && LOCAL_VER=$(cat "$VER_FILE") || LOCAL_VER="0.0"
 
-# 3. Версия с GitHub (Исправленный поиск)
+# 3. Запрос версии с GitHub
 echo -e "${B}[*] Запрос версии с GitHub...${N}"
-# Скачиваем первые 100 строк во временную переменную
-RAW_CONTENT=$(curl -sL "$RAW_CPP_URL" | head -n 100)
-# Ищем строку VERSION с любым количеством пробелов и возможным const
+RAW_CONTENT=$(curl -sL "$RAW_GO_URL" | head -n 50)
 REMOTE_VER=$(echo "$RAW_CONTENT" | grep -E "VERSION\s*=" | cut -d'"' -f2 | head -n 1)
 
-if [ -z "$REMOTE_VER" ]; then
-    echo -e "${R}[-] Ошибка: версия на GitHub не найдена.${N}"
-    echo -e "${Y}[!] Убедитесь, что в chat.cpp есть строка: string VERSION = \"5.0\";${N}"
-    exit 1
-fi
+[ -z "$REMOTE_VER" ] && REMOTE_VER="5.0_gui" # Заглушка, если в коде нет строки VERSION
 
 DO_INSTALL=false
-if [ "$LOCAL_VER" == "$REMOTE_VER" ] && [ -f ~/meoww ]; then
-    echo -e "${G}[+] Актуальная версия ($LOCAL_VER).${N}"
+if [ "$LOCAL_VER" == "$REMOTE_VER" ] && [ -f ~/meoww_gui ]; then
+    echo -e "${G}[+] Версия $LOCAL_VER актуальна.${N}"
     read -p "Переустановить? (y/N): " reconf
     [[ $reconf =~ ^[Yy]$ ]] && DO_INSTALL=true
 else
-    echo -e "${Y}[!] Новая версия: $LOCAL_VER -> $REMOTE_VER${N}"
-    read -p "Обновить? (Y/n): " conf
+    echo -e "${Y}[!] Доступно обновление: $LOCAL_VER -> $REMOTE_VER${N}"
+    read -p "Установить? (Y/n): " conf
     [[ ! $conf =~ ^[Nn]$ ]] && DO_INSTALL=true
 fi
 
-# 4. Компиляция
+# 4. Сборка
 if [ "$DO_INSTALL" = true ]; then
-    echo -e "${B}[*] Сборка v$REMOTE_VER (Web Interface)...${N}"
-    curl -L "$RAW_CPP_URL" -o "chat.cpp"
+    echo -e "${B}[*] Загрузка кода и модулей...${N}"
+    curl -L "$RAW_GO_URL" -o "main.go"
+    
+    # Инициализация модуля Go, если нужно
+    [ ! -f "go.mod" ] && go mod init meow_chat
+    go get fyne.io/fyne/v2
 
-    # Добавляем проверку наличия httplib.h перед компиляцией
-    if [ ! -f "httplib.h" ]; then
-        curl -L "https://raw.githubusercontent.com/yhirose/cpp-httplib/master/httplib.h" -o "httplib.h"
-    fi
-
-    if clang++ -O3 chat.cpp -lcurl -lssl -lcrypto -lpthread -o ~/meoww; then
+    echo -e "${B}[*] Сборка бинарного файла (это может занять минуту)...${N}"
+    # Собираем с флагами оптимизации
+    if go build -ldflags="-s -w" -o ~/meoww_gui main.go; then
         echo "$REMOTE_VER" > "$VER_FILE"
-        echo -e "${G}[OK] Успешно! Откройте http://localhost:8080 после запуска.${N}"
+        echo -e "${G}[OK] Успешно установлено в ~/meoww_gui${N}"
+        
+        # Разрешаем запуск внешних приложений (для уведомлений)
+        mkdir -p ~/.termux
+        echo "allow-external-apps=true" >> ~/.termux/termux.properties
+        termux-reload-settings
 
-        # Обновляем ярлык
-        mkdir -p ~/.shortcuts
-        printf '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\necho "Сервер запущен на http://localhost:8080"\n~/meoww\n' > ~/.shortcuts/chat && chmod +x ~/.shortcuts/chat
-
-        pkill -f "meoww" || true
-        rm chat.cpp
+        rm main.go
     else
-        echo -e "${R}[-] Ошибка компиляции!${N}"
+        echo -e "${R}[-] Ошибка сборки! Проверьте зависимости.${N}"
         exit 1
     fi
 else
-    echo -e "${B}[*] Выход.${N}"
+    echo -e "${B}[*] Отмена.${N}"
 fi
