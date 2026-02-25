@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -18,145 +18,160 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- КОНСТАНТЫ ---
+// --- НАСТРОЙКИ SUPABASE ---
 const (
-	SB_URL    = "https://ilszhdmqxsoixcefeoqa.supabase.co/rest/v1/messages"
-	SB_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
-	PUA_START = 0xE000
+	supabaseURL = "https://ilszhdmqxsoixcefeoqa.supabase.co"
+	supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
 )
 
-var (
-	myNick, myPass, myRoom string
-	chatLog               *widget.Entry
-)
+// Структура сообщения для таблицы messages
+type Message struct {
+	CreatedAt string `json:"created_at,omitempty"`
+	Sender    string `json:"sender"`
+	ChatKey   string `json:"chat_key"`
+	Payload   string `json:"payload"`
+}
 
-func aes256(text string, pass string, encrypt bool) string {
-	key := sha256.Sum256([]byte(pass))
-	block, _ := aes.NewCipher(key[:])
-	iv := make([]byte, aes.BlockSize) // Нулевой IV
+// --- ФУНКЦИИ ШИФРОВАНИЯ ---
 
-	if encrypt {
-		plaintext := []byte(text)
-		padding := aes.BlockSize - len(plaintext)%aes.BlockSize
-		padtext := bytes.Repeat([]byte{byte(padding)}, padding)
-		plaintext = append(plaintext, padtext...)
+func encrypt(text string, key string) string {
+	// Подгоняем ключ под 32 байта для AES-256
+	fixedKey := make([]byte, 32)
+	copy(fixedKey, key)
 
-		ciphertext := make([]byte, len(plaintext))
-		mode := cipher.NewCBCEncrypter(block, iv)
-		mode.CryptBlocks(ciphertext, plaintext)
-		return string(ciphertext)
-	} else {
-		ciphertext := []byte(text)
-		if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
-			return "ERR"
-		}
-		mode := cipher.NewCBCDecrypter(block, iv)
-		mode.CryptBlocks(ciphertext, ciphertext)
-		padding := int(ciphertext[len(ciphertext)-1])
-		if padding > aes.BlockSize { return "ERR" }
-		return string(ciphertext[:len(ciphertext)-padding])
+	block, _ := aes.NewCipher(fixedKey)
+	ciphertext := make([]byte, aes.BlockSize+len(text))
+	iv := ciphertext[:aes.BlockSize]
+	io.ReadFull(rand.Reader, iv)
+
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
+	return base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func decrypt(cryptoText string, key string) string {
+	fixedKey := make([]byte, 32)
+	copy(fixedKey, key)
+
+	ciphertext, _ := base64.StdEncoding.DecodeString(cryptoText)
+	block, _ := aes.NewCipher(fixedKey)
+	if len(ciphertext) < aes.BlockSize {
+		return "[Ошибка расшифровки]"
 	}
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+
+	stream := cipher.NewCFBDecrypter(block, iv)
+	stream.XORKeyStream(ciphertext, ciphertext)
+	return string(ciphertext)
 }
 
-// --- Z-ШИФРОВАНИЕ (PUA) ---
-func toZ(in string) string {
-	var res strings.Builder
-	for _, b := range []byte(in) {
-		res.WriteRune(rune(PUA_START + int(b)))
-		res.WriteString("\xCC\xA1")
-	}
-	return res.String()
-}
+// --- ОСНОВНАЯ ЛОГИКА ---
 
-func fromZ(in string) string {
-	var res []byte
-	runes := []rune(in)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] >= rune(PUA_START) && runes[i] <= rune(PUA_START+255) {
-			res = append(res, byte(runes[i]-PUA_START))
-		}
-	}
-	return string(res)
-}
-
-// --- СЕТЬ ---
-func sendMessage(text string) {
-	enc := aes256(text, myPass, true)
-	payload := toZ(enc)
-	msgData := map[string]string{"sender": myNick, "payload": payload, "chat_key": myRoom}
-	body, _ := json.Marshal(msgData)
-
-	req, _ := http.NewRequest("POST", SB_URL, bytes.NewBuffer(body))
-	req.Header.Set("apikey", SB_KEY)
-	req.Header.Set("Authorization", "Bearer "+SB_KEY)
-	req.Header.Set("Content-Type", "application/json")
-	http.DefaultClient.Do(req)
-}
-
-// --- GUI ---
 func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Meow Messenger")
 	window.Resize(fyne.NewSize(400, 600))
 
-	// Экраны
-	var loginLayout, chatLayout *fyne.Container
+	// Поля ввода
+	nickInput := widget.NewEntry()
+	nickInput.SetPlaceHolder("Твой ник...")
+	
+	roomInput := widget.NewEntry()
+	roomInput.SetPlaceHolder("Комната (chat_key)...")
+	
+	passInput := widget.NewPasswordEntry()
+	passInput.SetPlaceHolder("Пароль (ключ шифрования)...")
 
-	// Поля логина
-	nickEntry := widget.NewEntry(); nickEntry.SetPlaceHolder("Ник")
-	passEntry := widget.NewPasswordEntry(); passEntry.SetPlaceHolder("Пароль")
-	roomEntry := widget.NewEntry(); roomEntry.SetPlaceHolder("Комната")
+	chatLog := widget.NewMultiLineEntry()
+	chatLog.Disable() // Только для чтения
 
-	// Поля чата
-	chatLog = widget.NewMultiLineEntry()
-	chatLog.Disable()
-	input := widget.NewEntry(); input.SetPlaceHolder("Сообщение...")
+	msgInput := widget.NewEntry()
+	msgInput.SetPlaceHolder("Сообщение...")
 
-	sendBtn := widget.NewButton("Отправить", func() {
-		if input.Text != "" {
-			go sendMessage(input.Text)
-			input.SetText("")
+	// Функция отправки
+	sendMsg := func() {
+		if msgInput.Text == "" || nickInput.Text == "" || roomInput.Text == "" {
+			return
 		}
-	})
 
-	chatLayout = container.NewBorder(nil, container.NewVBox(input, sendBtn), nil, nil, chatLog)
-
-	loginBtn := widget.NewButton("Войти в чат", func() {
-		myNick, myPass, myRoom = nickEntry.Text, passEntry.Text, roomEntry.Text
-		if myNick == "" || myPass == "" || myRoom == "" { return }
+		encryptedPayload := encrypt(msgInput.Text, passInput.Text)
 		
-		window.SetContent(chatLayout)
+		msg := Message{
+			Sender:  nickInput.Text,
+			ChatKey: roomInput.Text,
+			Payload: encryptedPayload,
+		}
 
-		// Поток получения сообщений
+		jsonData, _ := json.Marshal(msg)
+		
+		req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(jsonData))
+		req.Header.Set("apikey", supabaseKey)
+		req.Header.Set("Authorization", "Bearer "+supabaseKey)
+		req.Header.Set("Content-Type", "application/json")
+
 		go func() {
-			knownIDs := make(map[float64]bool)
-			for {
-				url := fmt.Sprintf("%s?chat_key=eq.%s&order=id.asc&limit=20", SB_URL, myRoom)
-				req, _ := http.NewRequest("GET", url, nil)
-				req.Header.Set("apikey", SB_KEY)
-				req.Header.Set("Authorization", "Bearer "+SB_KEY)
-
-				if resp, err := http.DefaultClient.Do(req); err == nil {
-					body, _ := ioutil.ReadAll(resp.Body)
-					var data []map[string]interface{}
-					json.Unmarshal(body, &data)
-					for _, m := range data {
-						id := m["id"].(float64)
-						if !knownIDs[id] {
-							sender := m["sender"].(string)
-							dec := aes256(fromZ(m["payload"].(string)), myPass, false)
-							chatLog.Append(fmt.Sprintf("[%s]: %s\n", sender, dec))
-							knownIDs[id] = true
-						}
-					}
-					resp.Body.Close()
-				}
-				time.Sleep(2 * time.Second)
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				msgInput.SetText("")
 			}
 		}()
-	})
+	}
 
-	loginLayout = container.NewVBox(widget.NewLabel("MEOW GUI v5.0"), nickEntry, passEntry, roomEntry, loginBtn)
-	window.SetContent(loginLayout)
+	// Функция обновления чата
+	updateChat := func() {
+		for {
+			if roomInput.Text == "" {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+
+			// Получаем последние 20 сообщений для этой комнаты
+			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&order=created_at.desc&limit=20", supabaseURL, roomInput.Text)
+			req, _ := http.NewRequest("GET", url, nil)
+			req.Header.Set("apikey", supabaseKey)
+			req.Header.Set("Authorization", "Bearer "+supabaseKey)
+
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err == nil {
+				var messages []Message
+				json.NewDecoder(resp.Body).Decode(&messages)
+				resp.Body.Close()
+
+				formattedChat := ""
+				// Идем с конца, чтобы новые были внизу
+				for i := len(messages) - 1; i >= 0; i-- {
+					m := messages[i]
+					decrypted := decrypt(m.Payload, passInput.Text)
+					formattedChat += fmt.Sprintf("[%s]: %s\n", m.Sender, decrypted)
+				}
+				chatLog.SetText(formattedChat)
+			}
+			time.Sleep(3 * time.Second) // Пауза между обновлениями
+		}
+	}
+
+	msgInput.OnSubmitted = func(s string) { sendMsg() }
+	sendBtn := widget.NewButton("Отправить", sendMsg)
+
+	// Разметка
+	content := container.NewVBox(
+		widget.NewLabel("Настройки входа:"),
+		nickInput,
+		roomInput,
+		passInput,
+		widget.NewSeparator(),
+		container.NewStack(chatLog), // Обертка для лога
+		msgInput,
+		sendBtn,
+	)
+
+	// Запускаем фоновое обновление
+	go updateChat()
+
+	window.SetContent(content)
 	window.ShowAndRun()
 }
