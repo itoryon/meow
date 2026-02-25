@@ -1,0 +1,36 @@
+name: Build Android APK
+on:
+  push:
+    branches: [ main ] # Сборка запускается при каждом пуше в ветку main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev
+
+      - name: Install Fyne CLI
+        run: go install fyne.io/fyne/v2/cmd/fyne@latest
+
+      - name: Build APK
+        run: |
+          # Если у тебя есть иконка icon.png в корне, она подтянется. Если нет - убери флаг -icon
+          export PATH=$PATH:$(go env GOPATH)/bin
+          fyne package -os android -appID com.itoryon.meow
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: meow-messenger-apk
+          path: "*.apk"
