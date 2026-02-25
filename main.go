@@ -109,7 +109,7 @@ func main() {
 
 	// Поля чата
 	chatLog = widget.NewMultiLineEntry()
-	chatLog.SetReadOnly(true)
+	chatLog.Disable()
 	input := widget.NewEntry(); input.SetPlaceHolder("Сообщение...")
 
 	sendBtn := widget.NewButton("Отправить", func() {
