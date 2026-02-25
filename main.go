@@ -10,168 +10,209 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
-// --- НАСТРОЙКИ SUPABASE ---
+// Настройки Supabase
 const (
 	supabaseURL = "https://ilszhdmqxsoixcefeoqa.supabase.co"
 	supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
 )
 
-// Структура сообщения для таблицы messages
 type Message struct {
-	CreatedAt string `json:"created_at,omitempty"`
-	Sender    string `json:"sender"`
-	ChatKey   string `json:"chat_key"`
-	Payload   string `json:"payload"`
+	Sender  string `json:"sender"`
+	ChatKey string `json:"chat_key"`
+	Payload string `json:"payload"`
 }
 
-// --- ФУНКЦИИ ШИФРОВАНИЯ ---
-
-func encrypt(text string, key string) string {
-	// Подгоняем ключ под 32 байта для AES-256
-	fixedKey := make([]byte, 32)
-	copy(fixedKey, key)
-
-	block, _ := aes.NewCipher(fixedKey)
-	ciphertext := make([]byte, aes.BlockSize+len(text))
-	iv := ciphertext[:aes.BlockSize]
-	io.ReadFull(rand.Reader, iv)
-
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
-	return base64.StdEncoding.EncodeToString(ciphertext)
+type ChatSession struct {
+	Room string
+	Pass string
 }
-
-func decrypt(cryptoText string, key string) string {
-	fixedKey := make([]byte, 32)
-	copy(fixedKey, key)
-
-	ciphertext, _ := base64.StdEncoding.DecodeString(cryptoText)
-	block, _ := aes.NewCipher(fixedKey)
-	if len(ciphertext) < aes.BlockSize {
-		return "[Ошибка расшифровки]"
-	}
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
-
-	stream := cipher.NewCFBDecrypter(block, iv)
-	stream.XORKeyStream(ciphertext, ciphertext)
-	return string(ciphertext)
-}
-
-// --- ОСНОВНАЯ ЛОГИКА ---
 
 func main() {
-	myApp := app.New()
+	myApp := app.NewWithID("com.itoryon.meow.v2")
 	window := myApp.NewWindow("Meow Messenger")
-	window.Resize(fyne.NewSize(400, 600))
+	window.Resize(fyne.NewSize(400, 700))
 
-	// Поля ввода
-	nickInput := widget.NewEntry()
-	nickInput.SetPlaceHolder("Твой ник...")
+	prefs := myApp.Preferences()
+
+	// Состояние текущего чата
+	var currentRoom string
+	var currentPass string
+	var messageCache []Message
+
+	// Виджеты интерфейса
+	chatList := widget.NewMultiLineEntry()
+	chatList.Disable()
+	chatScroll := container.NewVScroll(chatList)
 	
-	roomInput := widget.NewEntry()
-	roomInput.SetPlaceHolder("Комната (chat_key)...")
-	
-	passInput := widget.NewPasswordEntry()
-	passInput.SetPlaceHolder("Пароль (ключ шифрования)...")
-
-	chatLog := widget.NewMultiLineEntry()
-	chatLog.Disable() // Только для чтения
-
 	msgInput := widget.NewEntry()
 	msgInput.SetPlaceHolder("Сообщение...")
 
-	// Функция отправки
-	sendMsg := func() {
-		if msgInput.Text == "" || nickInput.Text == "" || roomInput.Text == "" {
-			return
-		}
+	titleLabel := widget.NewLabel("Выберите чат")
 
-		encryptedPayload := encrypt(msgInput.Text, passInput.Text)
-		
-		msg := Message{
-			Sender:  nickInput.Text,
-			ChatKey: roomInput.Text,
-			Payload: encryptedPayload,
-		}
-
-		jsonData, _ := json.Marshal(msg)
-		
-		req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(jsonData))
-		req.Header.Set("apikey", supabaseKey)
-		req.Header.Set("Authorization", "Bearer "+supabaseKey)
-		req.Header.Set("Content-Type", "application/json")
-
-		go func() {
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				msgInput.SetText("")
-			}
-		}()
+	// --- ФУНКЦИИ ШИФРОВАНИЯ ---
+	encrypt := func(text, key string) string {
+		fixedKey := make([]byte, 32)
+		copy(fixedKey, key)
+		block, _ := aes.NewCipher(fixedKey)
+		ciphertext := make([]byte, aes.BlockSize+len(text))
+		iv := ciphertext[:aes.BlockSize]
+		io.ReadFull(rand.Reader, iv)
+		stream := cipher.NewCFBEncrypter(block, iv)
+		stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
+		return base64.StdEncoding.EncodeToString(ciphertext)
 	}
 
-	// Функция обновления чата
-	updateChat := func() {
+	decrypt := func(cryptoText, key string) string {
+		fixedKey := make([]byte, 32)
+		copy(fixedKey, key)
+		ciphertext, _ := base64.StdEncoding.DecodeString(cryptoText)
+		if len(ciphertext) < aes.BlockSize { return "[Ошибка]" }
+		block, _ := aes.NewCipher(fixedKey)
+		iv := ciphertext[:aes.BlockSize]
+		ciphertext = ciphertext[aes.BlockSize:]
+		stream := cipher.NewCFBDecrypter(block, iv)
+		stream.XORKeyStream(ciphertext, ciphertext)
+		return string(ciphertext)
+	}
+
+	// --- ЛОГИКА ЧАТОВ ---
+	loadMessages := func() {
 		for {
-			if roomInput.Text == "" {
+			if currentRoom == "" {
 				time.Sleep(2 * time.Second)
 				continue
 			}
-
-			// Получаем последние 20 сообщений для этой комнаты
-			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&order=created_at.desc&limit=20", supabaseURL, roomInput.Text)
+			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&order=created_at.desc&limit=30", supabaseURL, currentRoom)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
 
-			client := &http.Client{}
+			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Do(req)
 			if err == nil {
-				var messages []Message
-				json.NewDecoder(resp.Body).Decode(&messages)
+				json.NewDecoder(resp.Body).Decode(&messagesFromDB := []Message{})
+				messageCache = messagesFromDB
 				resp.Body.Close()
-
-				formattedChat := ""
-				// Идем с конца, чтобы новые были внизу
-				for i := len(messages) - 1; i >= 0; i-- {
-					m := messages[i]
-					decrypted := decrypt(m.Payload, passInput.Text)
-					formattedChat += fmt.Sprintf("[%s]: %s\n", m.Sender, decrypted)
-				}
-				chatLog.SetText(formattedChat)
 			}
-			time.Sleep(3 * time.Second) // Пауза между обновлениями
+
+			var sb strings.Builder
+			for i := len(messageCache) - 1; i >= 0; i-- {
+				m := messageCache[i]
+				sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Sender, decrypt(m.Payload, currentPass)))
+			}
+			chatList.SetText(sb.String())
+			chatScroll.ScrollToBottom()
+			time.Sleep(3 * time.Second)
+		}
+	}
+	go loadMessages()
+
+	// --- МЕНЮ И НАСТРОЙКИ ---
+	sidebar := container.NewVBox()
+	
+	refreshSidebar := func() {
+		sidebar.Objects = nil
+		sidebar.Add(widget.NewLabelWithStyle("Meow Профиль", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
+		
+		nickEntry := widget.NewEntry()
+		nickEntry.SetText(prefs.StringWithFallback("nickname", "Аноним"))
+		sidebar.Add(nickEntry)
+		sidebar.Add(widget.NewButton("Сохранить ник", func() {
+			prefs.SetString("nickname", nickEntry.Text)
+		}))
+		
+		sidebar.Add(widget.NewSeparator())
+		sidebar.Add(widget.NewLabel("Мои чаты:"))
+
+		// Список сохраненных чатов (формат "room:pass")
+		saved := prefs.StringWithFallback("chat_list", "")
+		if saved != "" {
+			for _, s := range strings.Split(saved, ",") {
+				parts := strings.Split(s, ":")
+				roomName := parts[0]
+				passVal := parts[1]
+				sidebar.Add(widget.NewButton(theme.MailAttachmentIcon(), roomName, func() {
+					currentRoom = roomName
+					currentPass = passVal
+					titleLabel.SetText("Чат: " + roomName)
+					messageCache = nil // очистить кэш при смене комнаты
+				}))
+			}
 		}
 	}
 
-	msgInput.OnSubmitted = func(s string) { sendMsg() }
-	sendBtn := widget.NewButton("Отправить", sendMsg)
+	// Диалог добавления чата
+	addChat := widget.NewButtonWithIcon("Добавить чат", theme.ContentAddIcon(), func() {
+		rEntry := widget.NewEntry()
+		pEntry := widget.NewPasswordEntry()
+		items := []*widget.FormItem{
+			{Text: "ID комнаты", Widget: rEntry},
+			{Text: "Пароль", Widget: pEntry},
+		}
+		dialog := widget.NewForm("Новый чат", "ОК", "Отмена", items, func(b bool) {
+			if b {
+				old := prefs.StringWithFallback("chat_list", "")
+				newEntry := rEntry.Text + ":" + pEntry.Text
+				if old == "" { prefs.SetString("chat_list", newEntry) } else {
+					prefs.SetString("chat_list", old+","+newEntry)
+				}
+				refreshSidebar()
+			}
+		}, window)
+		dialog.Show()
+	})
 
-	// Разметка
-	content := container.NewVBox(
-		widget.NewLabel("Настройки входа:"),
-		nickInput,
-		roomInput,
-		passInput,
-		widget.NewSeparator(),
-		container.NewStack(chatLog), // Обертка для лога
-		msgInput,
-		sendBtn,
+	refreshSidebar()
+	sidebar.Add(widget.NewSeparator())
+	sidebar.Add(addChat)
+
+	// Основной лейаут
+	topBar := container.NewHBox(
+		widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
+			// В Fyne Drawer реализуется через скрытие/показ контейнера или смену контента
+			// Для мобилок проще сделать модальное окно настроек
+		}),
+		titleLabel,
 	)
 
-	// Запускаем фоновое обновление
-	go updateChat()
+	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
+		if msgInput.Text == "" || currentRoom == "" { return }
+		text := msgInput.Text
+		msgInput.SetText("")
+		go func() {
+			msg := Message{
+				Sender:  prefs.StringWithFallback("nickname", "Аноним"),
+				ChatKey: currentRoom,
+				Payload: encrypt(text, currentPass),
+			}
+			jsonData, _ := json.Marshal(msg)
+			req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(jsonData))
+			req.Header.Set("apikey", supabaseKey)
+			req.Header.Set("Authorization", "Bearer "+supabaseKey)
+			req.Header.Set("Content-Type", "application/json")
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, _ := client.Do(req)
+			if resp != nil { resp.Body.Close() }
+		}()
+	})
 
-	window.SetContent(content)
+	bottomBar := container.NewBorder(nil, nil, nil, sendBtn, msgInput)
+	chatContent := container.NewBorder(topBar, bottomBar, nil, nil, chatScroll)
+	
+	// Используем Split для симуляции бокового меню
+	split := container.NewHSplit(sidebar, chatContent)
+	split.Offset = 0.3
+
+	window.SetContent(split)
 	window.ShowAndRun()
 }
