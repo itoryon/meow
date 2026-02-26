@@ -44,7 +44,6 @@ var (
 	avatarCache = make(map[string]fyne.CanvasObject)
 )
 
-// Упрощенный AES
 func fastDecrypt(cryptoText, key string) string {
 	if len(cryptoText) < 16 { return cryptoText }
 	fixedKey := make([]byte, 32); copy(fixedKey, key)
@@ -70,21 +69,21 @@ func fastEncrypt(text, key string) string {
 func getSmallAvatar(base64Str string) fyne.CanvasObject {
 	if base64Str == "" {
 		ic := canvas.NewImageFromResource(theme.AccountIcon())
-		ic.SetMinSize(fyne.NewSize(32, 32))
+		ic.SetMinSize(fyne.NewSize(36, 36))
 		return ic
 	}
 	if obj, ok := avatarCache[base64Str]; ok { return obj }
 	parts := strings.Split(base64Str, ",")
 	data, _ := base64.StdEncoding.DecodeString(parts[len(parts)-1])
 	img := canvas.NewImageFromReader(bytes.NewReader(data), "s.jpg")
-	img.SetMinSize(fyne.NewSize(32, 32))
+	img.SetMinSize(fyne.NewSize(36, 36))
 	avatarCache[base64Str] = img
 	return img
 }
 
 func main() {
 	os.Setenv("FYNE_SCALE", "1.1")
-	myApp := app.NewWithID("com.itoryon.meow.v18")
+	myApp := app.NewWithID("com.itoryon.meow.v19")
 	window := myApp.NewWindow("Meow")
 	window.Resize(fyne.NewSize(500, 800))
 
@@ -93,13 +92,13 @@ func main() {
 	messageBox := container.NewVBox()
 	chatScroll := container.NewVScroll(messageBox)
 	msgInput := widget.NewEntry()
+	msgInput.SetPlaceHolder("Напиши мяу...")
 
-	// ЦИКЛ С ЛИМИТОМ СООБЩЕНИЙ
+	// ГЛАВНЫЙ ЦИКЛ ОБНОВЛЕНИЯ (ОПТИМИЗИРОВАННЫЙ)
 	go func() {
 		for {
 			if currentRoom == "" { time.Sleep(time.Second); continue }
-			// Добавили limit=20 и сортировку по ID чтобы брать только свежее
-			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc&limit=20", supabaseURL, currentRoom, lastMsgID)
+			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc&limit=30", supabaseURL, currentRoom, lastMsgID)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
@@ -109,39 +108,39 @@ func main() {
 				var msgs []Message
 				json.NewDecoder(resp.Body).Decode(&msgs)
 				resp.Body.Close()
-				
-				if len(msgs) > 0 {
-					for _, m := range msgs {
-						if m.ID > lastMsgID {
-							lastMsgID = m.ID
-							txt := fastDecrypt(m.Payload, currentPass)
-							av := getSmallAvatar(m.SenderAvatar)
-							
-							name := widget.NewLabelWithStyle(m.Sender, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-							body := widget.NewLabel(txt)
-							body.Wrapping = fyne.TextWrapWord
-							
-							row := container.NewBorder(nil, nil, av, nil, container.NewVBox(name, body))
-							messageBox.Add(container.NewPadded(row))
-						}
+				for _, m := range msgs {
+					if m.ID > lastMsgID {
+						lastMsgID = m.ID
+						txt := fastDecrypt(m.Payload, currentPass)
+						av := getSmallAvatar(m.SenderAvatar)
+						name := widget.NewLabelWithStyle(m.Sender, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+						body := widget.NewLabel(txt)
+						body.Wrapping = fyne.TextWrapWord
+						row := container.NewBorder(nil, nil, av, nil, container.NewVBox(name, body))
+						messageBox.Add(container.NewPadded(row))
 					}
-					chatScroll.ScrollToBottom()
 				}
+				chatScroll.ScrollToBottom()
 			}
 			time.Sleep(2 * time.Second)
 		}
 	}()
 
-	// ПАНЕЛЬ УПРАВЛЕНИЯ
-	var sideMenu *dialog.CustomDialog
+	// ДИНАМИЧЕСКИЙ ДИАЛОГ
+	var panelDialog dialog.Dialog
+	panelHolder := container.NewStack() // Контейнер для смены контента
 
-	showProfile := func() {
+	// Функция создания Профиля
+	var createMainItems func() fyne.CanvasObject
+	
+	createProfileItems := func() fyne.CanvasObject {
 		nick := widget.NewEntry()
 		nick.SetText(prefs.String("nickname"))
-		
-		profileContent := container.NewVBox(
-			widget.NewButtonWithIcon("Назад в меню", theme.NavigateBackIcon(), func() {
-				sideMenu.Show() // Возвращаемся к основному списку
+		nick.SetPlaceHolder("Твой ник...")
+		return container.NewVBox(
+			widget.NewButtonWithIcon("Назад", theme.NavigateBackIcon(), func() {
+				panelHolder.Objects = []fyne.CanvasObject{createMainItems()}
+				panelHolder.Refresh()
 			}),
 			widget.NewSeparator(),
 			widget.NewButton("Выбрать фото", func() {
@@ -155,39 +154,45 @@ func main() {
 				}, window)
 			}),
 			nick,
-			widget.NewButton("ОК", func() {
+			widget.NewButton("Сохранить", func() {
 				prefs.SetString("nickname", nick.Text)
-				dialog.ShowInformation("Meow", "Данные сохранены", window)
+				dialog.ShowInformation("Meow", "Данные обновлены", window)
 			}),
 		)
-		// Обновляем содержимое текущего диалога, чтобы не плодить окна
-		sideMenu.SetContent(container.NewVScroll(profileContent))
 	}
 
-	menuBtn := widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
-		drawer := container.NewVBox(
-			widget.NewLabelWithStyle("MEOW", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-			widget.NewButtonWithIcon("Мой Профиль", theme.AccountIcon(), showProfile),
+	// Главное меню
+	createMainItems = func() fyne.CanvasObject {
+		listCont := container.NewVBox(
+			widget.NewLabelWithStyle("MEOW MENU", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			widget.NewButtonWithIcon("Мой Профиль", theme.AccountIcon(), func() {
+				panelHolder.Objects = []fyne.CanvasObject{createProfileItems()}
+				panelHolder.Refresh()
+			}),
 			widget.NewSeparator(),
 			widget.NewLabel("ЧАТЫ:"),
 		)
 		
-		list := strings.Split(prefs.StringWithFallback("chat_list", ""), ",")
-		for _, s := range list {
+		chats := strings.Split(prefs.StringWithFallback("chat_list", ""), ",")
+		for _, s := range chats {
 			if !strings.Contains(s, ":") { continue }
 			p := strings.Split(s, ":")
 			name, pass := p[0], p[1]
-			drawer.Add(widget.NewButton(name, func() {
+			listCont.Add(widget.NewButton(name, func() {
 				messageBox.Objects = nil
 				lastMsgID = 0
 				currentRoom, currentPass = name, pass
-				sideMenu.Hide()
+				panelDialog.Hide()
 			}))
 		}
+		return container.NewVScroll(listCont)
+	}
 
-		sideMenu = dialog.NewCustom("Панель", "Закрыть", container.NewVScroll(drawer), window)
-		sideMenu.Resize(fyne.NewSize(350, 600))
-		sideMenu.Show()
+	menuBtn := widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
+		panelHolder.Objects = []fyne.CanvasObject{createMainItems()}
+		panelDialog = dialog.NewCustom("Панель управления", "Закрыть", panelHolder, window)
+		panelDialog.Resize(fyne.NewSize(350, 550))
+		panelDialog.Show()
 	})
 
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
