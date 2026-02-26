@@ -40,6 +40,7 @@ type Message struct {
 
 var lastMsgID int
 var cachedMenuAvatar fyne.CanvasObject
+var settingsDialog dialog.Dialog // ПЕРЕМЕННАЯ ДЛЯ ДИАЛОГА
 
 func compressImage(data []byte) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
@@ -73,17 +74,11 @@ func encrypt(text, key string) string {
 func getAvatarObj(base64Str string, size float32) fyne.CanvasObject {
 	var img *canvas.Image
 	if base64Str != "" {
-		if idx := strings.Index(base64Str, ","); idx != -1 {
-			base64Str = base64Str[idx+1:]
-		}
+		if idx := strings.Index(base64Str, ","); idx != -1 { base64Str = base64Str[idx+1:] }
 		data, err := base64.StdEncoding.DecodeString(base64Str)
-		if err == nil {
-			img = canvas.NewImageFromReader(bytes.NewReader(data), "a.jpg")
-		}
+		if err == nil { img = canvas.NewImageFromReader(bytes.NewReader(data), "a.jpg") }
 	}
-	if img == nil {
-		img = canvas.NewImageFromResource(theme.AccountIcon())
-	}
+	if img == nil { img = canvas.NewImageFromResource(theme.AccountIcon()) }
 	img.FillMode = canvas.ImageFillContain
 	img.SetMinSize(fyne.NewSize(size, size))
 	return img
@@ -104,13 +99,9 @@ func main() {
 
 	cachedMenuAvatar = getAvatarObj(prefs.String("avatar_base64"), 50)
 
-	// Фон чата
 	go func() {
 		for {
-			if currentRoom == "" {
-				time.Sleep(2 * time.Second)
-				continue
-			}
+			if currentRoom == "" { time.Sleep(2 * time.Second); continue }
 			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc", supabaseURL, currentRoom, lastMsgID)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
@@ -193,7 +184,9 @@ func main() {
 				messageBox.Objects = nil
 				lastMsgID = 0
 				currentRoom, currentPass = name, pass
-				dialog.Instance().Hide() 
+				if settingsDialog != nil {
+					settingsDialog.Hide() // ИСПРАВЛЕНО
+				}
 			})
 			sidebar.Add(chatBtn)
 		}
@@ -220,9 +213,10 @@ func main() {
 		refreshSidebar()
 		settingsScroll := container.NewVScroll(sidebar)
 		settingsScroll.SetMinSize(fyne.NewSize(350, 500))
-		d := dialog.NewCustom("Настройки", "Закрыть", settingsScroll, window)
-		d.Resize(fyne.NewSize(380, 550))
-		d.Show()
+		
+		settingsDialog = dialog.NewCustom("Настройки", "Закрыть", settingsScroll, window)
+		settingsDialog.Resize(fyne.NewSize(380, 550))
+		settingsDialog.Show()
 	})
 
 	chatUI := container.NewBorder(
