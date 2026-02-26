@@ -43,36 +43,28 @@ var cachedMenuAvatar fyne.CanvasObject
 
 func compressImage(data []byte) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	var buf bytes.Buffer
 	jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
 	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 func decrypt(cryptoText, key string) string {
-	fixedKey := make([]byte, 32)
-	copy(fixedKey, key)
+	fixedKey := make([]byte, 32); copy(fixedKey, key)
 	ciphertext, _ := base64.StdEncoding.DecodeString(cryptoText)
-	if len(ciphertext) < aes.BlockSize {
-		return "[Зашифровано]"
-	}
+	if len(ciphertext) < aes.BlockSize { return "[Зашифровано]" }
 	block, _ := aes.NewCipher(fixedKey)
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
+	iv := ciphertext[:aes.BlockSize]; ciphertext = ciphertext[aes.BlockSize:]
 	stream := cipher.NewCFBDecrypter(block, iv)
 	stream.XORKeyStream(ciphertext, ciphertext)
 	return string(ciphertext)
 }
 
 func encrypt(text, key string) string {
-	fixedKey := make([]byte, 32)
-	copy(fixedKey, key)
+	fixedKey := make([]byte, 32); copy(fixedKey, key)
 	block, _ := aes.NewCipher(fixedKey)
 	ciphertext := make([]byte, aes.BlockSize+len(text))
-	iv := ciphertext[:aes.BlockSize]
-	io.ReadFull(rand.Reader, iv)
+	iv := ciphertext[:aes.BlockSize]; io.ReadFull(rand.Reader, iv)
 	stream := cipher.NewCFBEncrypter(block, iv)
 	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
 	return base64.StdEncoding.EncodeToString(ciphertext)
@@ -112,7 +104,7 @@ func main() {
 
 	cachedMenuAvatar = getAvatarObj(prefs.String("avatar_base64"), 50)
 
-	// Фоновое обновление чата
+	// Фон чата
 	go func() {
 		for {
 			if currentRoom == "" {
@@ -133,15 +125,14 @@ func main() {
 				if len(msgs) > 0 {
 					for _, m := range msgs {
 						txt := decrypt(m.Payload, currentPass)
-						if m.ID > lastMsgID {
-							lastMsgID = m.ID
-						}
+						if m.ID > lastMsgID { lastMsgID = m.ID }
 
 						avatar := container.NewStack(
 							getAvatarObj(m.SenderAvatar, 40),
 							widget.NewButton("", func() {
 								dialog.ShowCustom("Профиль", "ОК",
-									container.NewVBox(container.NewCenter(getAvatarObj(m.SenderAvatar, 200)), widget.NewLabel(m.Sender)), window)
+									container.NewVBox(container.NewCenter(getAvatarObj(m.SenderAvatar, 200)), 
+									widget.NewLabelWithStyle(m.Sender, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})), window)
 							}),
 						)
 
@@ -160,9 +151,11 @@ func main() {
 	}()
 
 	sidebar := container.NewVBox()
-	refreshSidebar := func() {
+	var refreshSidebar func()
+
+	refreshSidebar = func() {
 		sidebar.Objects = nil
-		sidebar.Add(widget.NewLabelWithStyle("ПРОФИЛЬ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
+		sidebar.Add(widget.NewLabelWithStyle("МОЙ ПРОФИЛЬ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 		sidebar.Add(container.NewCenter(cachedMenuAvatar))
 		
 		nickEntry := widget.NewEntry()
@@ -171,57 +164,74 @@ func main() {
 		
 		sidebar.Add(widget.NewButton("Сменить фото", func() {
 			dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
-				if err != nil || reader == nil {
-					return
-				}
+				if err != nil || reader == nil { return }
 				d, _ := io.ReadAll(reader)
 				go func() {
 					s, _ := compressImage(d)
 					prefs.SetString("avatar_base64", s)
 					cachedMenuAvatar = getAvatarObj(s, 50)
+					refreshSidebar()
 				}()
 			}, window)
 		}))
 		
-		sidebar.Add(widget.NewButton("Сохранить", func() {
+		sidebar.Add(widget.NewButton("Сохранить ник", func() {
 			prefs.SetString("nickname", nickEntry.Text)
 		}))
 		
 		sidebar.Add(widget.NewSeparator())
+		sidebar.Add(widget.NewLabelWithStyle("МОИ ЧАТЫ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 		
 		// Список чатов
-		for _, s := range strings.Split(prefs.StringWithFallback("chat_list", ""), ",") {
-			if s == "" {
-				continue
-			}
+		chats := strings.Split(prefs.StringWithFallback("chat_list", ""), ",")
+		for _, s := range chats {
+			if s == "" { continue }
 			p := strings.Split(s, ":")
-			if len(p) < 2 {
-				continue
-			}
+			if len(p) < 2 { continue }
 			name, pass := p[0], p[1]
-			sidebar.Add(widget.NewButton("Чат: "+name, func() {
+			
+			chatBtn := widget.NewButton("Войти в "+name, func() {
 				messageBox.Objects = nil
 				lastMsgID = 0
 				currentRoom, currentPass = name, pass
-			}))
+				dialog.Instance().Hide() // Закрыть настройки при входе
+			})
+			sidebar.Add(chatBtn)
 		}
+
+		// КНОПКА ДОБАВЛЕНИЯ ЧАТА (Вернул!)
+		sidebar.Add(widget.NewButtonWithIcon("Добавить новый чат", theme.ContentAddIcon(), func() {
+			rid, rps := widget.NewEntry(), widget.NewPasswordEntry()
+			dialog.ShowForm("Новый чат", "Добавить", "Отмена", []*widget.FormItem{
+				{Text: "ID чата", Widget: rid},
+				{Text: "Пароль", Widget: rps},
+			}, func(b bool) {
+				if b && rid.Text != "" {
+					old := prefs.String("chat_list")
+					newChat := rid.Text + ":" + rps.Text
+					if old == "" { prefs.SetString("chat_list", newChat) } else { prefs.SetString("chat_list", old+","+newChat) }
+					refreshSidebar()
+				}
+			}, window)
+		}))
 	}
 
 	refreshSidebar()
 	
 	menuBtn := widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
 		refreshSidebar()
-		dialog.ShowCustom("Настройки", "Закрыть", container.NewVScroll(sidebar), window)
+		settingsScroll := container.NewVScroll(sidebar)
+		settingsScroll.SetMinSize(fyne.NewSize(350, 500))
+		d := dialog.NewCustom("Настройки", "Закрыть", settingsScroll, window)
+		d.Resize(fyne.NewSize(380, 550))
+		d.Show()
 	})
 
 	chatUI := container.NewBorder(
-		container.NewHBox(menuBtn, widget.NewLabel("Meow")),
+		container.NewHBox(menuBtn, widget.NewLabelWithStyle("Meow Messenger", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
 		container.NewBorder(nil, nil, nil, widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
-			if msgInput.Text == "" || currentRoom == "" {
-				return
-			}
-			t := msgInput.Text
-			msgInput.SetText("")
+			if msgInput.Text == "" || currentRoom == "" { return }
+			t := msgInput.Text; msgInput.SetText("")
 			go func() {
 				msg := Message{
 					Sender:       prefs.StringWithFallback("nickname", "User"),
