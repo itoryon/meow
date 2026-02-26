@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/jpeg"
+	"image/jpeg"
 	_ "image/png"
 	"io"
 	"net/http"
@@ -41,30 +41,27 @@ type Message struct {
 
 func fastCrypt(text, key string, decrypt bool) string {
 	if len(text) < 16 && decrypt { return text }
-	hashedKey := make([]byte, 32)
-	copy(hashedKey, key)
-	block, _ := aes.NewCipher(hashedKey)
+	hKey := make([]byte, 32); copy(hKey, key)
+	block, _ := aes.NewCipher(hKey)
 	if decrypt {
 		data, _ := base64.StdEncoding.DecodeString(text)
-		if len(data) < aes.BlockSize { return text }
-		iv := data[:aes.BlockSize]
-		ciphertext := data[aes.BlockSize:]
+		if len(data) < 16 { return text }
+		iv, ct := data[:16], data[16:]
 		stream := cipher.NewCTR(block, iv)
-		stream.XORKeyStream(ciphertext, ciphertext)
-		return string(ciphertext)
+		stream.XORKeyStream(ct, ct)
+		return string(ct)
 	}
-	ciphertext := make([]byte, aes.BlockSize+len(text))
-	iv := ciphertext[:aes.BlockSize]
-	io.ReadFull(rand.Reader, iv)
+	ct := make([]byte, 16+len(text))
+	iv := ct[:16]; io.ReadFull(rand.Reader, iv)
 	stream := cipher.NewCTR(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
-	return base64.StdEncoding.EncodeToString(ciphertext)
+	stream.XORKeyStream(ct[16:], []byte(text))
+	return base64.StdEncoding.EncodeToString(ct)
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.imperor.v35")
-	window := myApp.NewWindow("Imperor UI Fix")
-	window.Resize(fyne.NewSize(450, 700))
+	myApp := app.NewWithID("com.itoryon.imperor.v36")
+	window := myApp.NewWindow("Imperor v36")
+	window.Resize(fyne.NewSize(450, 750))
 
 	prefs := myApp.Preferences()
 	var currentRoom, currentPass string
@@ -73,20 +70,7 @@ func main() {
 	chatBox := container.NewVBox()
 	chatScroll := container.NewVScroll(chatBox)
 
-	viewAvatar := func(pathData string) {
-		if !strings.HasPrefix(pathData, "data:image") {
-			dialog.ShowInformation("Инфо", "Аватар отсутствует", window)
-			return
-		}
-		pts := strings.Split(pathData, ",")
-		raw, _ := base64.StdEncoding.DecodeString(pts[len(pts)-1])
-		img, _, _ := image.Decode(bytes.NewReader(raw))
-		view := canvas.NewImageFromImage(img)
-		view.FillMode = canvas.ImageFillContain
-		view.SetMinSize(fyne.NewSize(350, 350))
-		dialog.ShowCustom("Профиль", "Закрыть", view, window)
-	}
-
+	// Поток обновлений
 	go func() {
 		for {
 			if currentRoom == "" { time.Sleep(time.Second); continue }
@@ -94,7 +78,6 @@ func main() {
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
-
 			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 			if err == nil && resp.StatusCode == 200 {
 				var msgs []Message
@@ -103,55 +86,39 @@ func main() {
 				for _, m := range msgs {
 					lastID = m.ID
 					txt := fastCrypt(m.Payload, currentPass, true)
-					
-					// Создаем КРУЖОЧЕК-аватарку
 					circle := canvas.NewCircle(theme.PrimaryColor())
-					circle.StrokeWidth = 1
-					circle.StrokeColor = color.White
-
-					avData := m.SenderAvatar
-					avatarBtn := widget.NewButton("", func() { viewAvatar(avData) })
-					avatarBtn.Importance = widget.LowImportance
-					
-					avatarStack := container.NewStack(circle, canvas.NewText("?", color.White), avatarBtn)
-					// Используем GridWrap для задания размера примитивам
-					avatarContainer := container.NewGridWrap(fyne.NewSize(32, 32), avatarStack)
-
-					senderName := canvas.NewText(m.Sender, theme.PrimaryColor())
-					senderName.TextSize = 10
-					
-					msgText := widget.NewLabel(txt)
-					msgText.Wrapping = fyne.TextWrapWord
-					
-					row := container.NewHBox(
-						container.NewCenter(avatarContainer),
-						container.NewVBox(senderName, msgText),
-					)
-					chatBox.Add(row)
+					circle.StrokeWidth = 1; circle.StrokeColor = color.White
+					av := m.SenderAvatar
+					btn := widget.NewButton("", func() {
+						if strings.HasPrefix(av, "data:image") {
+							raw, _ := base64.StdEncoding.DecodeString(strings.Split(av, ",")[1])
+							img, _, _ := image.Decode(bytes.NewReader(raw))
+							dialog.ShowCustom("Аватар", "X", canvas.NewImageFromImage(img), window)
+						}
+					})
+					btn.Importance = widget.LowImportance
+					avatar := container.NewGridWrap(fyne.NewSize(36, 36), container.NewStack(circle, btn))
+					chatBox.Add(container.NewHBox(avatar, container.NewVBox(canvas.NewText(m.Sender, theme.DisabledColor()), widget.NewLabel(txt))))
 				}
-				chatBox.Refresh()
-				chatScroll.ScrollToBottom()
+				chatBox.Refresh(); chatScroll.ScrollToBottom()
 			}
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
 	msgInput := widget.NewEntry()
-	msgInput.SetPlaceHolder("Написать...")
-
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
 		if msgInput.Text == "" || currentRoom == "" { return }
-		t := msgInput.Text
-		msgInput.SetText("")
+		t := msgInput.Text; msgInput.SetText("")
 		go func() {
 			m := Message{
-				Sender:       prefs.StringWithFallback("nickname", "Meow"),
-				ChatKey:      currentRoom,
-				Payload:      fastCrypt(t, currentPass, false),
-				SenderAvatar: prefs.String("avatar_path"),
+				Sender: prefs.StringWithFallback("nickname", "User"),
+				ChatKey: currentRoom,
+				Payload: fastCrypt(t, currentPass, false),
+				SenderAvatar: prefs.String("avatar_data"),
 			}
-			body, _ := json.Marshal(m)
-			req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(body))
+			b, _ := json.Marshal(m)
+			req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(b))
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
 			req.Header.Set("Content-Type", "application/json")
@@ -159,26 +126,52 @@ func main() {
 		}()
 	})
 
-	bottomBar := container.NewBorder(nil, nil, nil, sendBtn, msgInput)
+	// --- МЕНЮ НАСТРОЕК ---
+	showSettings := func() {
+		nickEntry := widget.NewEntry()
+		nickEntry.SetText(prefs.String("nickname"))
+		
+		imgStatus := widget.NewLabel("Фото не выбрано")
+		if prefs.String("avatar_data") != "" { imgStatus.SetText("Фото загружено") }
+
+		btnPhoto := widget.NewButton("Выбрать Аватар", func() {
+			dialog.ShowFileOpen(func(r fyne.URIReadCloser, _ error) {
+				if r == nil { return }
+				data, _ := io.ReadAll(r)
+				img, _, _ := image.Decode(bytes.NewReader(data))
+				var buf bytes.Buffer
+				jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}) // Сжатие для скорости
+				prefs.SetString("avatar_data", "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(buf.Bytes()))
+				imgStatus.SetText("Готово!")
+			}, window)
+		})
+
+		roomEntry, passEntry := widget.NewEntry(), widget.NewEntry()
+		roomEntry.SetPlaceHolder("Room ID"); passEntry.SetPlaceHolder("Key")
+
+		content := container.NewVBox(
+			widget.NewLabelWithStyle("ПРОФИЛЬ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			nickEntry, btnPhoto, imgStatus,
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("ВХОД В ЧАТ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			roomEntry, passEntry,
+			widget.NewButton("ВОЙТИ", func() {
+				prefs.SetString("nickname", nickEntry.Text)
+				currentRoom, currentPass = roomEntry.Text, passEntry.Text
+				chatBox.Objects = nil; lastID = 0; chatBox.Refresh()
+			}),
+		)
+		
+		d := dialog.NewCustom("Настройки", "Закрыть", container.NewPadded(content), window)
+		d.Resize(fyne.NewSize(400, 500))
+		d.Show()
+	}
 
 	window.SetContent(container.NewBorder(
-		container.NewHBox(widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
-			idI, psI := widget.NewEntry(), widget.NewEntry()
-			dialog.ShowForm("Connect", "OK", "X", []*widget.FormItem{
-				{Text: "ID", Widget: idI}, {Text: "Key", Widget: psI},
-			}, func(ok bool) {
-				if ok {
-					currentRoom, currentPass = idI.Text, psI.Text
-					chatBox.Objects = nil
-					lastID = 0
-					chatBox.Refresh()
-				}
-			}, window)
-		}), widget.NewLabel("Imperor")),
-		container.NewPadded(bottomBar), // Паддинг поможет клавиатуре
+		container.NewHBox(widget.NewButtonWithIcon("", theme.SettingsIcon(), showSettings), widget.NewLabel("Imperor")),
+		container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, msgInput)),
 		nil, nil,
 		chatScroll,
 	))
-
 	window.ShowAndRun()
 }
