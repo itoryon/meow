@@ -8,6 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
@@ -42,6 +45,15 @@ var (
 	cachedMenuAvatar fyne.CanvasObject
 	settingsDialog   dialog.Dialog
 )
+
+// Сжатие картинки, чтобы не лагало
+func compressImage(data []byte) (string, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil { return "", err }
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
 
 func getAvatarCached(base64Str string, size float32) fyne.CanvasObject {
 	if base64Str == "" {
@@ -90,7 +102,6 @@ func encrypt(text, key string) string {
 }
 
 func main() {
-	// Увеличиваем масштаб всего интерфейса (текст и кнопки станут больше)
 	os.Setenv("FYNE_SCALE", "1.2")
 
 	myApp := app.NewWithID("com.itoryon.meow.v12")
@@ -149,9 +160,21 @@ func main() {
 		sidebar.Objects = nil
 		sidebar.Add(widget.NewLabelWithStyle("МЕНЮ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 		sidebar.Add(container.NewCenter(cachedMenuAvatar))
+		
 		nick := widget.NewEntry()
 		nick.SetText(prefs.StringWithFallback("nickname", "User"))
 		sidebar.Add(nick)
+		sidebar.Add(widget.NewButton("Сменить фото", func() {
+			dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+				if reader == nil { return }
+				d, _ := io.ReadAll(reader)
+				s, _ := compressImage(d)
+				prefs.SetString("avatar_base64", s)
+				cachedMenuAvatar = getAvatarCached(s, 60)
+				refreshSidebar()
+			}, window)
+		}))
+
 		sidebar.Add(widget.NewButton("Сохранить ник", func() { prefs.SetString("nickname", nick.Text) }))
 		sidebar.Add(widget.NewSeparator())
 		
