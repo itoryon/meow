@@ -2,16 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/jpeg"
+	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -30,19 +31,45 @@ const (
 )
 
 type Message struct {
-	ID           int    `json:"id"`
+	ID           int    `json:"id,omitempty"`
 	Sender       string `json:"sender"`
+	ChatKey      string `json:"chat_key"`
 	Payload      string `json:"payload"`
-	SenderAvatar string `json:"sender_avatar"` // Теперь тут только PATH или ID
+	SenderAvatar string `json:"sender_avatar"`
+}
+
+// Ультра-легкое AES-CTR шифрование
+func fastCrypt(text, key string, decrypt bool) string {
+	if len(text) < 16 && decrypt { return text }
+	
+	// Генерируем ключ 32 байта (AES-256)
+	hashedKey := make([]byte, 32)
+	copy(hashedKey, key)
+
+	block, _ := aes.NewCipher(hashedKey)
+	
+	if decrypt {
+		data, _ := base64.StdEncoding.DecodeString(text)
+		iv := data[:aes.BlockSize]
+		ciphertext := data[aes.BlockSize:]
+		stream := cipher.NewCTR(block, iv)
+		stream.XORKeyStream(ciphertext, ciphertext)
+		return string(ciphertext)
+	}
+
+	// Шифрование
+	ciphertext := make([]byte, aes.BlockSize+len(text))
+	iv := ciphertext[:aes.BlockSize]
+	io.ReadFull(rand.Reader, iv)
+	stream := cipher.NewCTR(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func main() {
-	// Жесткая деактивация лагов
-	os.Setenv("FYNE_RENDER", "software") 
-	
-	myApp := app.NewWithID("com.itoryon.imperor.v31")
-	window := myApp.NewWindow("Imperor v31")
-	window.Resize(fyne.NewSize(500, 800))
+	myApp := app.NewWithID("com.itoryon.imperor.v33")
+	window := myApp.NewWindow("Imperor Secure")
+	window.Resize(fyne.NewSize(450, 700))
 
 	prefs := myApp.Preferences()
 	var currentRoom, currentPass string
@@ -51,44 +78,45 @@ func main() {
 	chatBox := container.NewVBox()
 	chatScroll := container.NewVScroll(chatBox)
 
-	// Функция для открытия аватарки (только когда нужно)
-	showAvatar := func(avatarPath string) {
-		if avatarPath == "" { return }
-		// Здесь логика загрузки картинки по пути из Supabase Storage или кэша
-		dialog.ShowInformation("Аватар", "Тут откроется фото: "+avatarPath, window)
+	viewAvatar := func(pathData string) {
+		if !strings.HasPrefix(pathData, "data:image") {
+			dialog.ShowInformation("Инфо", "Нет фото", window)
+			return
+		}
+		pts := strings.Split(pathData, ",")
+		raw, _ := base64.StdEncoding.DecodeString(pts[len(pts)-1])
+		img, _, _ := image.Decode(bytes.NewReader(raw))
+		view := canvas.NewImageFromImage(img)
+		view.FillMode = canvas.ImageFillContain
+		view.SetMinSize(fyne.NewSize(300, 300))
+		dialog.ShowCustom("Аватар", "Закрыть", view, window)
 	}
 
 	go func() {
 		for {
 			if currentRoom == "" { time.Sleep(time.Second); continue }
-
-			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc", supabaseURL, currentRoom, lastID)
+			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc&limit=25", supabaseURL, currentRoom, lastID)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
 
 			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-			if err != nil { continue }
-
-			var msgs []Message
-			json.NewDecoder(resp.Body).Decode(&msgs)
-			resp.Body.Close()
-
-			if len(msgs) > 0 {
+			if err == nil && resp.StatusCode == 200 {
+				var msgs []Message
+				json.NewDecoder(resp.Body).Decode(&msgs)
+				resp.Body.Close()
 				for _, m := range msgs {
 					lastID = m.ID
+					// ДЕШИФРОВКА
+					txt := fastCrypt(m.Payload, currentPass, true)
 					
-					// Создаем кликабельное имя (вместо тяжелой картинки)
-					path := m.SenderAvatar
-					senderBtn := widget.NewButtonWithIcon(m.Sender, theme.AccountIcon(), func() {
-						showAvatar(path)
-					})
-					senderBtn.Importance = widget.LowImportance // Чтобы не выглядело как огромная кнопка
-
-					msgLabel := widget.NewLabel(m.Payload) // Пока без дешифровки для теста скорости
-					msgLabel.Wrapping = fyne.TextWrapWord
-
-					chatBox.Add(container.NewVBox(senderBtn, msgLabel))
+					avData := m.SenderAvatar
+					nameBtn := widget.NewButtonWithIcon(m.Sender, theme.AccountIcon(), func() { viewAvatar(avData) })
+					nameBtn.Importance = widget.LowImportance
+					
+					msgText := widget.NewLabel(txt)
+					msgText.Wrapping = fyne.TextWrapWord
+					chatBox.Add(container.NewVBox(nameBtn, msgText))
 				}
 				chatBox.Refresh()
 				chatScroll.ScrollToBottom()
@@ -98,29 +126,42 @@ func main() {
 	}()
 
 	msgInput := widget.NewEntry()
-	msgInput.SetPlaceHolder("Сообщение...")
+	msgInput.SetPlaceHolder("Безопасное сообщение...")
 
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
 		if msgInput.Text == "" || currentRoom == "" { return }
-		
-		// При отправке шлем только "ID_AVATAR", а не саму картинку!
+		t := msgInput.Text
+		msgInput.SetText("")
 		go func() {
 			m := Message{
-				Sender:       prefs.String("nickname"),
-				Payload:      msgInput.Text, // Нужно зашифровать
-				SenderAvatar: "user_avatar_777.png", // ПУТЬ, а не base64
+				Sender:       prefs.StringWithFallback("nickname", "User"),
+				ChatKey:      currentRoom,
+				Payload:      fastCrypt(t, currentPass, false), // ШИФРОВАНИЕ
+				SenderAvatar: prefs.String("avatar_path"),
 			}
 			body, _ := json.Marshal(m)
-			// POST запрос...
-			log.Println("Sent with path:", m.SenderAvatar)
+			req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(body))
+			req.Header.Set("apikey", supabaseKey)
+			req.Header.Set("Authorization", "Bearer "+supabaseKey)
+			req.Header.Set("Content-Type", "application/json")
+			(&http.Client{}).Do(req)
 		}()
-		msgInput.SetText("")
 	})
 
 	window.SetContent(container.NewBorder(
-		widget.NewButton("ROOMS", func() {
-			// Меню выбора комнат...
-		}),
+		container.NewHBox(widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
+			idIn, psIn := widget.NewEntry(), widget.NewEntry()
+			dialog.ShowForm("Вход", "ОК", "X", []*widget.FormItem{
+				{Text: "ID", Widget: idIn}, {Text: "Key", Widget: psIn},
+			}, func(ok bool) {
+				if ok {
+					currentRoom, currentPass = idIn.Text, psIn.Text
+					chatBox.Objects = nil
+					lastID = 0
+					chatBox.Refresh()
+				}
+			}, window)
+		}), widget.NewLabel("Imperor Secure")),
 		container.NewBorder(nil, nil, nil, sendBtn, msgInput),
 		nil, nil,
 		chatScroll,
