@@ -182,7 +182,6 @@ func main() {
 		sidebar.Add(widget.NewSeparator())
 		sidebar.Add(widget.NewLabelWithStyle("МОИ ЧАТЫ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 		
-		// Список чатов
 		chats := strings.Split(prefs.StringWithFallback("chat_list", ""), ",")
 		for _, s := range chats {
 			if s == "" { continue }
@@ -194,12 +193,11 @@ func main() {
 				messageBox.Objects = nil
 				lastMsgID = 0
 				currentRoom, currentPass = name, pass
-				dialog.Instance().Hide() // Закрыть настройки при входе
+				dialog.Instance().Hide() 
 			})
 			sidebar.Add(chatBtn)
 		}
 
-		// КНОПКА ДОБАВЛЕНИЯ ЧАТА (Вернул!)
 		sidebar.Add(widget.NewButtonWithIcon("Добавить новый чат", theme.ContentAddIcon(), func() {
 			rid, rps := widget.NewEntry(), widget.NewPasswordEntry()
 			dialog.ShowForm("Новый чат", "Добавить", "Отмена", []*widget.FormItem{
