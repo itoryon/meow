@@ -66,40 +66,28 @@ func fastEncrypt(text, key string) string {
 	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
-func getSmallAvatar(base64Str string) fyne.CanvasObject {
-	if base64Str == "" {
-		ic := canvas.NewImageFromResource(theme.AccountIcon())
-		ic.SetMinSize(fyne.NewSize(32, 32))
-		return ic
-	}
-	if obj, ok := avatarCache[base64Str]; ok { return obj }
-	parts := strings.Split(base64Str, ",")
-	data, _ := base64.StdEncoding.DecodeString(parts[len(parts)-1])
-	img := canvas.NewImageFromReader(bytes.NewReader(data), "s.jpg")
-	img.SetMinSize(fyne.NewSize(32, 32))
-	avatarCache[base64Str] = img
-	return img
-}
-
 func main() {
+	// Полное отключение всех графических эффектов
 	os.Setenv("FYNE_ANIMATION", "0")
-	myApp := app.NewWithID("com.itoryon.imperor.v25")
+	os.Setenv("FYNE_SCALE", "1.0")
+	
+	myApp := app.NewWithID("com.itoryon.imperor.v26")
 	window := myApp.NewWindow("Imperor")
 	window.Resize(fyne.NewSize(450, 800))
 
 	prefs := myApp.Preferences()
 	var currentRoom, currentPass string
 	
-	chatListContainer := container.NewVBox()
-	chatScroll := container.NewVScroll(chatListContainer)
+	chatBox := container.NewVBox()
+	chatScroll := container.NewVScroll(chatBox)
 	
 	msgInput := widget.NewEntry()
 	msgInput.SetPlaceHolder("Сообщение...")
 
+	// Поток обновления (3.5 секунды - баланс между скоростью и лагами)
 	go func() {
-		ticker := time.NewTicker(4 * time.Second)
-		for range ticker.C {
-			if currentRoom == "" { continue }
+		for {
+			if currentRoom == "" { time.Sleep(2 * time.Second); continue }
 			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc&limit=15", supabaseURL, currentRoom, lastMsgID)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
@@ -114,58 +102,52 @@ func main() {
 					if m.ID > lastMsgID {
 						lastMsgID = m.ID
 						txt := fastDecrypt(m.Payload, currentPass)
-						av := getSmallAvatar(m.SenderAvatar)
 						
-						name := widget.NewLabelWithStyle(m.Sender, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+						// Сверхлегкая отрисовка без виджетов
+						name := canvas.NewText(m.Sender, theme.PrimaryColor())
+						name.TextStyle.Bold = true
 						body := widget.NewLabel(txt)
 						body.Wrapping = fyne.TextWrapWord
 						
-						row := container.NewHBox(av, container.NewVBox(name, body))
-						chatListContainer.Add(row)
+						chatBox.Add(container.NewVBox(name, body))
 					}
 				}
 				chatScroll.ScrollToBottom()
 			}
+			time.Sleep(3500 * time.Millisecond)
 		}
 	}()
 
 	var panelDialog dialog.Dialog
 	panelHolder := container.NewStack()
-
-	// Объявляем функции заранее для рекурсивного вызова в панели
 	var createMainItems func() fyne.CanvasObject
-	var createProfileItems func() fyne.CanvasObject
 
-	createProfileItems = func() fyne.CanvasObject {
+	createProfileItems := func() fyne.CanvasObject {
 		nick := widget.NewEntry()
 		nick.SetText(prefs.String("nickname"))
-		
-		// Используем пакет image для обработки
 		return container.NewVBox(
 			widget.NewButton("Назад", func() {
 				panelHolder.Objects = []fyne.CanvasObject{createMainItems()}
 				panelHolder.Refresh()
 			}),
-			widget.NewButton("Загрузить фото", func() {
+			widget.NewButton("Фото", func() {
 				dialog.ShowFileOpen(func(r fyne.URIReadCloser, _ error) {
 					if r == nil { return }
 					d, _ := io.ReadAll(r)
-					img, _, _ := image.Decode(bytes.NewReader(d)) // Использование image
+					img, _, _ := image.Decode(bytes.NewReader(d))
 					var buf bytes.Buffer
-					jpeg.Encode(&buf, img, &jpeg.Options{Quality: 10}) // Использование image/jpeg
+					jpeg.Encode(&buf, img, &jpeg.Options{Quality: 10})
 					prefs.SetString("avatar_base64", "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(buf.Bytes()))
 				}, window)
 			}),
 			nick,
-			widget.NewButton("Сохранить", func() {
-				prefs.SetString("nickname", nick.Text)
-			}),
+			widget.NewButton("ОК", func() { prefs.SetString("nickname", nick.Text) }),
 		)
 	}
 
 	createMainItems = func() fyne.CanvasObject {
-		listCont := container.NewVBox(widget.NewLabelWithStyle("IMPEROR", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
-		listCont.Add(widget.NewButton("Профиль", func() {
+		list := container.NewVBox(widget.NewLabel("IMPEROR"))
+		list.Add(widget.NewButton("Профиль", func() {
 			panelHolder.Objects = []fyne.CanvasObject{createProfileItems()}
 			panelHolder.Refresh()
 		}))
@@ -176,29 +158,27 @@ func main() {
 			p := strings.Split(s, ":")
 			cName, cPass := p[0], p[1]
 			
-			delBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
-				current := strings.Split(prefs.String("chat_list"), ",")
+			del := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+				curr := strings.Split(prefs.String("chat_list"), ",")
 				var nl []string
-				for _, item := range current {
-					if item != cName+":"+cPass { nl = append(nl, item) }
-				}
+				for _, it := range curr { if it != cName+":"+cPass { nl = append(nl, it) } }
 				prefs.SetString("chat_list", strings.Join(nl, ","))
 				panelHolder.Objects = []fyne.CanvasObject{createMainItems()}
 				panelHolder.Refresh()
 			})
 			
-			entryBtn := widget.NewButton("Чат: "+cName, func() {
-				chatListContainer.Objects = nil
+			btn := widget.NewButton("Войти: "+cName, func() {
+				chatBox.Objects = nil
 				lastMsgID = 0
 				currentRoom, currentPass = cName, cPass
 				panelDialog.Hide()
 			})
-			listCont.Add(container.NewBorder(nil, nil, nil, delBtn, entryBtn))
+			list.Add(container.NewBorder(nil, nil, nil, del, btn))
 		}
 
-		listCont.Add(widget.NewButton("Добавить", func() {
+		list.Add(widget.NewButton("Добавить", func() {
 			id, ps := widget.NewEntry(), widget.NewEntry()
-			dialog.ShowForm("Добавить", "OK", "X", []*widget.FormItem{
+			dialog.ShowForm("Add", "OK", "X", []*widget.FormItem{
 				{Text: "ID", Widget: id}, {Text: "Key", Widget: ps},
 			}, func(b bool) {
 				if b {
@@ -210,12 +190,12 @@ func main() {
 				}
 			}, window)
 		}))
-		return container.NewVScroll(listCont)
+		return container.NewVScroll(list)
 	}
 
 	menuBtn := widget.NewButtonWithIcon("", theme.MenuIcon(), func() {
 		panelHolder.Objects = []fyne.CanvasObject{createMainItems()}
-		panelDialog = dialog.NewCustom("Меню", "Закрыть", panelHolder, window)
+		panelDialog = dialog.NewCustom("Menu", "X", panelHolder, window)
 		panelDialog.Show()
 	})
 
@@ -237,11 +217,10 @@ func main() {
 		}()
 	})
 
-	inputArea := container.NewBorder(nil, nil, nil, sendBtn, msgInput)
-	
+	// Ультра-плоская структура контента
 	window.SetContent(container.NewBorder(
 		container.NewHBox(menuBtn, widget.NewLabel("IMPEROR")),
-		container.NewPadded(inputArea),
+		container.NewBorder(nil, nil, nil, sendBtn, msgInput),
 		nil, nil,
 		chatScroll,
 	))
