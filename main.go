@@ -62,8 +62,8 @@ func fastCrypt(text, key string, decrypt bool) string {
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.imperor.v34")
-	window := myApp.NewWindow("Imperor UI")
+	myApp := app.NewWithID("com.itoryon.imperor.v35")
+	window := myApp.NewWindow("Imperor UI Fix")
 	window.Resize(fyne.NewSize(450, 700))
 
 	prefs := myApp.Preferences()
@@ -73,7 +73,6 @@ func main() {
 	chatBox := container.NewVBox()
 	chatScroll := container.NewVScroll(chatBox)
 
-	// Показ большой аватарки
 	viewAvatar := func(pathData string) {
 		if !strings.HasPrefix(pathData, "data:image") {
 			dialog.ShowInformation("Инфо", "Аватар отсутствует", window)
@@ -107,16 +106,16 @@ func main() {
 					
 					// Создаем КРУЖОЧЕК-аватарку
 					circle := canvas.NewCircle(theme.PrimaryColor())
-					circle.SetMinSize(fyne.NewSize(32, 32))
-					circle.StrokeWidth = 2
+					circle.StrokeWidth = 1
 					circle.StrokeColor = color.White
 
-					// Делаем кружок кликабельным
 					avData := m.SenderAvatar
 					avatarBtn := widget.NewButton("", func() { viewAvatar(avData) })
-					avatarBtn.Importance = widget.LowImportance // Прозрачная кнопка поверх круга
+					avatarBtn.Importance = widget.LowImportance
 					
 					avatarStack := container.NewStack(circle, canvas.NewText("?", color.White), avatarBtn)
+					// Используем GridWrap для задания размера примитивам
+					avatarContainer := container.NewGridWrap(fyne.NewSize(32, 32), avatarStack)
 
 					senderName := canvas.NewText(m.Sender, theme.PrimaryColor())
 					senderName.TextSize = 10
@@ -124,9 +123,8 @@ func main() {
 					msgText := widget.NewLabel(txt)
 					msgText.Wrapping = fyne.TextWrapWord
 					
-					// Сборка сообщения: [Кружок] [Имя + Текст]
 					row := container.NewHBox(
-						container.NewCenter(avatarStack),
+						container.NewCenter(avatarContainer),
 						container.NewVBox(senderName, msgText),
 					)
 					chatBox.Add(row)
@@ -161,7 +159,6 @@ func main() {
 		}()
 	})
 
-	// Чтобы клавиатура не перекрывала ввод, используем Border (input в Bottom)
 	bottomBar := container.NewBorder(nil, nil, nil, sendBtn, msgInput)
 
 	window.SetContent(container.NewBorder(
@@ -178,9 +175,9 @@ func main() {
 				}
 			}, window)
 		}), widget.NewLabel("Imperor")),
-		bottomBar, // Поле ввода внизу
+		container.NewPadded(bottomBar), // Паддинг поможет клавиатуре
 		nil, nil,
-		chatScroll, // Скролл в центре
+		chatScroll,
 	))
 
 	window.ShowAndRun()
