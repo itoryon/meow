@@ -2,9 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -33,128 +30,101 @@ const (
 )
 
 type Message struct {
-	ID      int    `json:"id"`
-	Sender  string `json:"sender"`
-	Payload string `json:"payload"`
-}
-
-func fastDecrypt(cryptoText, key string) string {
-	if len(cryptoText) < 16 { return cryptoText }
-	fixedKey := make([]byte, 32); copy(fixedKey, key)
-	ciphertext, _ := base64.StdEncoding.DecodeString(cryptoText)
-	block, _ := aes.NewCipher(fixedKey)
-	iv := ciphertext[:aes.BlockSize]
-	stream := cipher.NewCFBDecrypter(block, iv)
-	res := ciphertext[aes.BlockSize:]
-	stream.XORKeyStream(res, res)
-	return string(res)
+	ID           int    `json:"id"`
+	Sender       string `json:"sender"`
+	Payload      string `json:"payload"`
+	SenderAvatar string `json:"sender_avatar"` // Теперь тут только PATH или ID
 }
 
 func main() {
-	// Отключаем софт-рендеринг, пробуем нативный
-	os.Unsetenv("FYNE_RENDER") 
+	// Жесткая деактивация лагов
+	os.Setenv("FYNE_RENDER", "software") 
 	
-	myApp := app.NewWithID("com.itoryon.imperor.v30")
-	window := myApp.NewWindow("Imperor v30")
+	myApp := app.NewWithID("com.itoryon.imperor.v31")
+	window := myApp.NewWindow("Imperor v31")
 	window.Resize(fyne.NewSize(500, 800))
 
 	prefs := myApp.Preferences()
 	var currentRoom, currentPass string
 	var lastID int
 	
-	// Данные для списка
-	var data []string
-	messagesList := widget.NewList(
-		func() int { return len(data) },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.ListItemID, o fyne.CanvasObject) {
-			o.(*widget.Label).SetText(data[id])
-		},
-	)
+	chatBox := container.NewVBox()
+	chatScroll := container.NewVScroll(chatBox)
+
+	// Функция для открытия аватарки (только когда нужно)
+	showAvatar := func(avatarPath string) {
+		if avatarPath == "" { return }
+		// Здесь логика загрузки картинки по пути из Supabase Storage или кэша
+		dialog.ShowInformation("Аватар", "Тут откроется фото: "+avatarPath, window)
+	}
 
 	go func() {
 		for {
-			if currentRoom == "" {
-				time.Sleep(time.Second)
-				continue
-			}
+			if currentRoom == "" { time.Sleep(time.Second); continue }
 
 			url := fmt.Sprintf("%s/rest/v1/messages?chat_key=eq.%s&id=gt.%d&order=id.asc", supabaseURL, currentRoom, lastID)
 			req, _ := http.NewRequest("GET", url, nil)
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
 
-			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-			if err != nil {
-				log.Println("CRITICAL ERROR:", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			if resp.StatusCode != 200 {
-				log.Println("SUPABASE ERROR:", resp.StatusCode)
-				resp.Body.Close()
-				time.Sleep(5 * time.Second)
-				continue
-			}
+			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+			if err != nil { continue }
 
 			var msgs []Message
 			json.NewDecoder(resp.Body).Decode(&msgs)
 			resp.Body.Close()
 
 			if len(msgs) > 0 {
-				log.Printf("LOADED %d MESSAGES", len(msgs))
 				for _, m := range msgs {
 					lastID = m.ID
-					decrypted := fastDecrypt(m.Payload, currentPass)
-					data = append(data, m.Sender+": "+decrypted)
+					
+					// Создаем кликабельное имя (вместо тяжелой картинки)
+					path := m.SenderAvatar
+					senderBtn := widget.NewButtonWithIcon(m.Sender, theme.AccountIcon(), func() {
+						showAvatar(path)
+					})
+					senderBtn.Importance = widget.LowImportance // Чтобы не выглядело как огромная кнопка
+
+					msgLabel := widget.NewLabel(m.Payload) // Пока без дешифровки для теста скорости
+					msgLabel.Wrapping = fyne.TextWrapWord
+
+					chatBox.Add(container.NewVBox(senderBtn, msgLabel))
 				}
-				messagesList.Refresh()
-				messagesList.ScrollToBottom()
+				chatBox.Refresh()
+				chatScroll.ScrollToBottom()
 			}
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
-	// Интерфейс
 	msgInput := widget.NewEntry()
+	msgInput.SetPlaceHolder("Сообщение...")
+
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
 		if msgInput.Text == "" || currentRoom == "" { return }
-		// Отправка (упрощено для теста)
+		
+		// При отправке шлем только "ID_AVATAR", а не саму картинку!
 		go func() {
-			log.Println("SENDING MESSAGE...")
+			m := Message{
+				Sender:       prefs.String("nickname"),
+				Payload:      msgInput.Text, // Нужно зашифровать
+				SenderAvatar: "user_avatar_777.png", // ПУТЬ, а не base64
+			}
+			body, _ := json.Marshal(m)
+			// POST запрос...
+			log.Println("Sent with path:", m.SenderAvatar)
 		}()
 		msgInput.SetText("")
 	})
 
-	menuBtn := widget.NewButton("MENU", func() {
-		idEntry := widget.NewEntry()
-		idEntry.SetPlaceHolder("Room ID")
-		passEntry := widget.NewPasswordEntry()
-		passEntry.SetPlaceHolder("Key")
-
-		dialog.ShowForm("Connect", "Join", "Cancel", []*widget.FormItem{
-			{Text: "ID", Widget: idEntry},
-			{Text: "Pass", Widget: passEntry},
-		}, func(ok bool) {
-			if ok {
-				currentRoom = idEntry.Text
-				currentPass = passEntry.Text
-				data = nil // Чистим чат
-				lastID = 0
-				messagesList.Refresh()
-				log.Println("JOINED ROOM:", currentRoom)
-			}
-		}, window)
-	})
-
 	window.SetContent(container.NewBorder(
-		container.NewHBox(menuBtn, canvas.NewText(" Imperor Chat", theme.PrimaryColor())),
+		widget.NewButton("ROOMS", func() {
+			// Меню выбора комнат...
+		}),
 		container.NewBorder(nil, nil, nil, sendBtn, msgInput),
 		nil, nil,
-		messagesList,
+		chatScroll,
 	))
 
-	log.Println("APP STARTED SUCCESSFULLY")
 	window.ShowAndRun()
 }
