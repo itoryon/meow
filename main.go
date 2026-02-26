@@ -32,7 +32,7 @@ const (
 )
 
 type Message struct {
-	ID           int    `json:"id,omitempty"`
+	ID           int    `json:"id"`
 	Sender       string `json:"sender"`
 	ChatKey      string `json:"chat_key"`
 	Payload      string `json:"payload"`
@@ -59,7 +59,7 @@ func fastCrypt(text, key string, decrypt bool) string {
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.imperor.v37")
+	myApp := app.NewWithID("com.itoryon.imperor.v38")
 	window := myApp.NewWindow("Imperor")
 	window.Resize(fyne.NewSize(450, 800))
 
@@ -70,7 +70,7 @@ func main() {
 	chatBox := container.NewVBox()
 	chatScroll := container.NewVScroll(chatBox)
 
-	// Поток обновлений
+	// Обновление сообщений
 	go func() {
 		for {
 			if currentRoom == "" { time.Sleep(time.Second); continue }
@@ -87,17 +87,7 @@ func main() {
 					lastID = m.ID
 					txt := fastCrypt(m.Payload, currentPass, true)
 					circle := canvas.NewCircle(theme.PrimaryColor())
-					circle.StrokeWidth = 1; circle.StrokeColor = color.White
-					av := m.SenderAvatar
-					btn := widget.NewButton("", func() {
-						if strings.HasPrefix(av, "data:image") {
-							raw, _ := base64.StdEncoding.DecodeString(strings.Split(av, ",")[1])
-							img, _, _ := image.Decode(bytes.NewReader(raw))
-							dialog.ShowCustom("Аватар", "X", canvas.NewImageFromImage(img), window)
-						}
-					})
-					btn.Importance = widget.LowImportance
-					avatar := container.NewGridWrap(fyne.NewSize(36, 36), container.NewStack(circle, btn))
+					avatar := container.NewGridWrap(fyne.NewSize(36, 36), circle)
 					chatBox.Add(container.NewHBox(avatar, container.NewVBox(canvas.NewText(m.Sender, theme.DisabledColor()), widget.NewLabel(txt))))
 				}
 				chatBox.Refresh(); chatScroll.ScrollToBottom()
@@ -126,85 +116,90 @@ func main() {
 		}()
 	})
 
-	// --- ОКНО ПРОФИЛЯ ---
+	// --- ВСПОМОГАТЕЛЬНЫЕ ОКНА ---
+	
+	// Окно настроек профиля
 	showProfile := func() {
-		nickEntry := widget.NewEntry()
-		nickEntry.SetText(prefs.String("nickname"))
-		imgLabel := widget.NewLabel("Фото статус: " + strings.TrimPrefix(fmt.Sprintf("%v", prefs.String("avatar_data") != ""), "false"))
-		
-		profileContent := container.NewVBox(
-			widget.NewLabelWithStyle("Настройки профиля", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-			widget.NewLabel("Ваш никнейм:"),
-			nickEntry,
-			widget.NewButtonWithIcon("Выбрать фото", theme.ContentAddIcon(), func() {
-				dialog.ShowFileOpen(func(r fyne.URIReadCloser, _ error) {
-					if r == nil { return }
-					data, _ := io.ReadAll(r); img, _, _ := image.Decode(bytes.NewReader(data))
-					var buf bytes.Buffer
-					jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
-					prefs.SetString("avatar_data", "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(buf.Bytes()))
-					imgLabel.SetText("Фото обновлено!")
-				}, window)
-			}),
-			imgLabel,
-			widget.NewButtonWithIcon("Сохранить", theme.ConfirmIcon(), func() {
-				prefs.SetString("nickname", nickEntry.Text)
-				dialog.ShowInformation("Успех", "Данные сохранены", window)
-			}),
-		)
-		d := dialog.NewCustom("Профиль", "Назад", container.NewPadded(profileContent), window)
-		d.Resize(fyne.NewSize(440, 700))
-		d.Show()
+		nickIn := widget.NewEntry()
+		nickIn.SetText(prefs.String("nickname"))
+		d := dialog.NewCustom("Профиль", "Закрыть", container.NewVBox(
+			widget.NewLabel("Ник:"), nickIn,
+			widget.NewButton("Сохранить", func() { prefs.SetString("nickname", nickIn.Text) }),
+		), window)
+		d.Resize(fyne.NewSize(400, 700)); d.Show()
 	}
 
-	// --- ФОРМА ВХОДА (FAB) ---
+	// Полноэкранное добавление чата
 	showAddChat := func() {
 		roomIn, passIn := widget.NewEntry(), widget.NewEntry()
-		roomIn.SetPlaceHolder("Название комнаты"); passIn.SetPlaceHolder("Пароль (Ключ)")
-		dialog.ShowForm("Новый чат", "Войти", "Отмена", []*widget.FormItem{
-			{Text: "ID", Widget: roomIn}, {Text: "Pass", Widget: passIn},
-		}, func(ok bool) {
-			if ok && roomIn.Text != "" {
-				currentRoom, currentPass = roomIn.Text, passIn.Text
-				chatBox.Objects = nil; lastID = 0; chatBox.Refresh()
-			}
-		}, window)
+		var d dialog.Dialog
+		content := container.NewVBox(
+			widget.NewLabelWithStyle("ДОБАВИТЬ ЧАТ", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			widget.NewLabel("Название:"), roomIn,
+			widget.NewLabel("Пароль:"), passIn,
+			widget.NewButton("ВОЙТИ И СОХРАНИТЬ", func() {
+				if roomIn.Text != "" {
+					// Сохраняем в список
+					list := prefs.String("chat_list")
+					if !strings.Contains(list, roomIn.Text) {
+						prefs.SetString("chat_list", list+"|"+roomIn.Text+":"+passIn.Text)
+					}
+					currentRoom, currentPass = roomIn.Text, passIn.Text
+					chatBox.Objects = nil; lastID = 0; chatBox.Refresh()
+					d.Hide()
+				}
+			}),
+		)
+		d = dialog.NewCustom("Новый чат", "X", container.NewPadded(content), window)
+		d.Resize(fyne.NewSize(450, 800)); d.Show()
 	}
 
-	// --- БОКОВОЕ МЕНЮ ---
-	var sideMenu dialog.Dialog
-	menuContent := container.NewVBox(
-		widget.NewButtonWithIcon("Настройки профиля", theme.AccountIcon(), func() {
-			sideMenu.Hide()
-			showProfile()
-		}),
-		widget.NewButtonWithIcon("Настройки", theme.SettingsIcon(), func() {
-			dialog.ShowInformation("Инфо", "В разработке", window)
-		}),
-	)
-	sideMenu = dialog.NewCustom("Меню", "Закрыть", container.NewPadded(menuContent), window)
+	// Боковая панель (Drawer)
+	var drawer dialog.Dialog
+	showDrawer := func() {
+		chatListCont := container.NewVBox()
+		chats := strings.Split(prefs.String("chat_list"), "|")
+		for _, c := range chats {
+			if !strings.Contains(c, ":") { continue }
+			p := strings.Split(c, ":")
+			name, pass := p[0], p[1]
+			chatListCont.Add(widget.NewButton(name, func() {
+				currentRoom, currentPass = name, pass
+				chatBox.Objects = nil; lastID = 0; chatBox.Refresh()
+				drawer.Hide()
+			}))
+		}
 
-	// Floating Action Button
+		menu := container.NewVBox(
+			widget.NewLabelWithStyle("IMPEROR", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			widget.NewButtonWithIcon("Профиль", theme.AccountIcon(), func() { drawer.Hide(); showProfile() }),
+			widget.NewButtonWithIcon("Настройки", theme.SettingsIcon(), func() { dialog.ShowInformation("!", "В разработке", window) }),
+			widget.NewSeparator(),
+			widget.NewLabel("Ваши чаты:"),
+			container.NewVScroll(chatListCont),
+		)
+		drawer = dialog.NewCustom("Меню", "Закрыть", container.NewPadded(menu), window)
+		drawer.Resize(fyne.NewSize(300, 800)) // Высота во весь экран
+		drawer.Show()
+	}
+
+	// Layout
 	fab := widget.NewButtonWithIcon("", theme.ContentAddIcon(), showAddChat)
 	fab.Importance = widget.HighImportance
 
-	// Основной слой: Чат + Ввод
-	mainContent := container.NewBorder(
-		container.NewHBox(widget.NewButtonWithIcon("", theme.MenuIcon(), func() { sideMenu.Show() }), widget.NewLabel("Imperor")),
-		container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, msgInput)),
-		nil, nil,
+	inputArea := container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, msgInput))
+	
+	// Контейнер для чата с кнопкой поверх
+	chatLayout := container.NewStack(
 		chatScroll,
+		container.NewBorder(nil, container.NewHBox(container.NewStack(), fab), nil, nil),
 	)
 
-	// Слой FAB поверх основного контента
-	contentStack := container.NewStack(
-		mainContent,
-		container.NewVBox(
-			container.NewStack(), // Прослойка, чтобы сдвинуть кнопку вниз
-			container.NewHBox(container.NewStack(), container.NewPadded(fab)), // Кнопка в углу
-		),
-	)
+	window.SetContent(container.NewBorder(
+		container.NewHBox(widget.NewButtonWithIcon("", theme.MenuIcon(), showDrawer), widget.NewLabel("Imperor")),
+		inputArea, nil, nil,
+		chatLayout,
+	))
 
-	window.SetContent(contentStack)
 	window.ShowAndRun()
 }
