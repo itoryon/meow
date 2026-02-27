@@ -4,9 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'dart:async';
 
-// ВСТАВЬ СВОИ ДАННЫЕ СЮДА
 const supabaseUrl = 'https://ilszhdmqxsoixcefeoqa.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc'; 
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,16 +16,13 @@ void main() async {
 class SignalApp extends StatelessWidget {
   const SignalApp({super.key});
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        primaryColor: const Color(0xFF2090FF),
-      ),
-      home: const MainScreen(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData.dark().copyWith(
+      scaffoldBackgroundColor: const Color(0xFF121212),
+    ),
+    home: const MainScreen(),
+  );
 }
 
 class MainScreen extends StatefulWidget {
@@ -42,76 +38,53 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _load();
   }
 
-  _loadData() async {
+  _load() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       myNick = prefs.getString('nickname') ?? "User";
-      myChats = prefs.getStringList('chats') ?? [];
+      myChats = prefs.getStringList('chats') ?? ["main:123"];
     });
-  }
-
-  void _showAddChat() {
-    final idC = TextEditingController();
-    final keyC = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text("Новый чат"),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: idC, decoration: const InputDecoration(hintText: "ID (напр. main)")),
-          TextField(controller: keyC, decoration: const InputDecoration(hintText: "Ключ (любой)")),
-        ]),
-        actions: [
-          ElevatedButton(onPressed: () async {
-            if(idC.text.isEmpty) return;
-            final prefs = await SharedPreferences.getInstance();
-            myChats.add("${idC.text}:${keyC.text}");
-            await prefs.setStringList('chats', myChats);
-            setState((){});
-            Navigator.pop(c);
-          }, child: const Text("OK"))
-        ],
-      )
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Signal Clone")),
+      appBar: AppBar(title: const Text("Signal Clone v67")),
       body: ListView.builder(
         itemCount: myChats.length,
         itemBuilder: (c, i) {
-          final parts = myChats[i].split(':');
+          final p = myChats[i].split(':');
           return ListTile(
-            title: Text(parts[0]),
+            leading: const Icon(Icons.security, color: Colors.blue),
+            title: Text(p[0]),
+            subtitle: const Text("Нажмите для входа"),
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => ChatScreen(
-              roomName: parts[0], 
-              encKey: parts.length > 1 ? parts[1] : "", 
-              myNick: myNick
+              room: p[0], 
+              pass: p.length > 1 ? p[1] : "", 
+              nick: myNick
             ))),
           );
         },
       ),
-      floatingActionButton: FloatingActionButton(onPressed: _showAddChat, child: const Icon(Icons.add)),
     );
   }
 }
 
 class ChatScreen extends StatefulWidget {
-  final String roomName, encKey, myNick;
-  const ChatScreen({super.key, required this.roomName, required this.encKey, required this.myNick});
+  final String room, pass, nick;
+  const ChatScreen({super.key, required this.room, required this.pass, required this.nick});
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final _msgC = TextEditingController();
+  final _controller = TextEditingController();
   final _sb = Supabase.instance.client;
   List<Map<String, dynamic>> _msgs = [];
+  String _status = "Загрузка...";
   bool _loading = true;
   Timer? _t;
 
@@ -127,72 +100,91 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _fetch() async {
     try {
-      final res = await _sb.from('messages').select().eq('chat_key', widget.roomName).order('id', ascending: false).limit(30);
-      if (mounted) setState(() { _msgs = List<Map<String, dynamic>>.from(res); _loading = false; });
-    } catch (e) { print("Error: $e"); }
-  }
-
-  String _decrypt(dynamic payload) {
-    final text = payload?.toString() ?? "";
-    if (widget.encKey.isEmpty || text.isEmpty) return text;
-    try {
-      final key = enc.Key.fromUtf8(widget.encKey.padRight(32).substring(0, 32));
-      final iv = enc.IV.fromLength(16);
-      final encrypter = enc.Encrypter(enc.AES(key));
-      return encrypter.decrypt64(text, iv: iv);
+      final res = await _sb.from('messages')
+          .select()
+          .eq('chat_key', widget.room)
+          .order('id', ascending: false)
+          .limit(30);
+      
+      if (mounted) {
+        setState(() {
+          _msgs = List<Map<String, dynamic>>.from(res);
+          _loading = false;
+          _status = "OK. Найдено сообщений: ${_msgs.length}";
+        });
+      }
     } catch (e) {
-      return "🔒 $text"; // Показываем зашифрованный текст, если не удалось расшифровать
+      if (mounted) setState(() => _status = "Ошибка БД: $e");
     }
   }
 
   void _send() async {
-    if (_msgC.text.isEmpty) return;
-    final raw = _msgC.text;
-    _msgC.clear();
+    if (_controller.text.isEmpty) return;
+    final raw = _controller.text;
+    _controller.clear();
 
     String toSend = raw;
-    if (widget.encKey.isNotEmpty) {
-      final key = enc.Key.fromUtf8(widget.encKey.padRight(32).substring(0, 32));
-      final iv = enc.IV.fromLength(16);
-      final encrypter = enc.Encrypter(enc.AES(key));
-      toSend = encrypter.encrypt(raw, iv: iv).base64;
+    if (widget.pass.isNotEmpty) {
+      try {
+        final key = enc.Key.fromUtf8(widget.pass.padRight(32).substring(0, 32));
+        final iv = enc.IV.fromLength(16);
+        final encrypter = enc.Encrypter(enc.AES(key));
+        toSend = encrypter.encrypt(raw, iv: iv).base64;
+      } catch (e) { print(e); }
     }
 
-    await _sb.from('messages').insert({
-      'sender_': widget.myNick,
-      'payload': toSend,
-      'chat_key': widget.roomName,
-    });
-    _fetch();
+    try {
+      // ИСПОЛЬЗУЕМ ВАШИ ПОЛЯ: sender, chat_key, payload
+      await _sb.from('messages').insert({
+        'sender': widget.nick, 
+        'payload': toSend,
+        'chat_key': widget.room,
+      });
+      _fetch();
+    } catch (e) {
+      setState(() => _status = "Ошибка отправки: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.roomName)),
+      appBar: AppBar(title: Text(widget.room)),
       body: Column(children: [
+        // Полоска статуса для отладки
+        Container(
+          width: double.infinity,
+          color: Colors.blue.withOpacity(0.1),
+          padding: const EdgeInsets.all(4),
+          child: Text(_status, style: const TextStyle(fontSize: 10, color: Colors.blueAccent)),
+        ),
         Expanded(
           child: _loading 
             ? const Center(child: CircularProgressIndicator())
             : _msgs.isEmpty 
-              ? const Center(child: Text("Пусто. Напишите что-нибудь!"))
+              ? const Center(child: Text("Тут пока ничего нет..."))
               : ListView.builder(
                   reverse: true,
                   itemCount: _msgs.length,
                   itemBuilder: (c, i) {
                     final m = _msgs[i];
-                    bool isMe = m['sender_'] == widget.myNick;
-                    return Container(
-                      padding: const EdgeInsets.all(10),
-                      margin: const EdgeInsets.all(5),
+                    bool isMe = m['sender'] == widget.nick;
+                    return Align(
                       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
                       child: Container(
                         padding: const EdgeInsets.all(12),
+                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          color: isMe ? Colors.blue : Colors.grey[800],
-                          borderRadius: BorderRadius.circular(15)
+                          color: isMe ? Colors.blue[800] : const Color(0xFF2D2D2D),
+                          borderRadius: BorderRadius.circular(15),
                         ),
-                        child: Text(_decrypt(m['payload'])),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if(!isMe) Text(m['sender'] ?? "Аноним", style: const TextStyle(fontSize: 10, color: Colors.blueGrey, fontWeight: FontWeight.bold)),
+                            Text(m['payload'] ?? ""), 
+                          ],
+                        ),
                       ),
                     );
                   },
@@ -201,8 +193,8 @@ class _ChatScreenState extends State<ChatScreen> {
         Padding(
           padding: const EdgeInsets.all(8.0),
           child: Row(children: [
-            Expanded(child: TextField(controller: _msgC, decoration: const InputDecoration(hintText: "Текст..."))),
-            IconButton(icon: const Icon(Icons.send), onPressed: _send),
+            Expanded(child: TextField(controller: _controller, decoration: const InputDecoration(hintText: "Написать...", border: InputBorder.none))),
+            IconButton(icon: const Icon(Icons.send, color: Colors.blue), onPressed: _send),
           ]),
         )
       ]),
