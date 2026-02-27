@@ -31,12 +31,11 @@ import (
 )
 
 const (
-	supabaseURL = "https://ilszhdmqxsoixcefeoqa.supabase.co"
-	supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
-
+	supabaseURL  = "https://ilszhdmqxsoixcefeoqa.supabase.co"
+	supabaseKey  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
 	avatarSize   = 96
 	jpegQuality  = 72
-	avatarDpSize = 48 // размер в интерфейсе
+	avatarDpSize = 48
 )
 
 type Message struct {
@@ -142,7 +141,7 @@ func getOrCreateAvatarImage(b64 string) *canvas.Image {
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.imperor.v43")
+	myApp := app.NewWithID("com.itoryon.meow") // ← изменил на ваш app-id
 	window := myApp.NewWindow("Imperor")
 	window.Resize(fyne.NewSize(450, 800))
 
@@ -150,12 +149,11 @@ func main() {
 	var currentRoom, currentPass string
 	var lastID int
 
-	// Чат
 	var chatMessages []ChatMessage
 	var chatList *widget.List
 	var chatScroll *container.Scroll
 
-	// Буфер входящих сообщений
+	// Получение сообщений (фон)
 	go func() {
 		for {
 			if currentRoom == "" {
@@ -181,8 +179,7 @@ func main() {
 					incomingMu.Lock()
 					incomingMessages = append(incomingMessages, msgs...)
 					incomingMu.Unlock()
-
-					fyne.CurrentApp().Driver().RunOnMainThread(func() {})
+					// просто триггер — обновление будет в тикере
 				}
 			}
 
@@ -190,7 +187,7 @@ func main() {
 		}
 	}()
 
-	// Плавное добавление сообщений
+	// Плавное добавление в UI
 	go func() {
 		ticker := time.NewTicker(450 * time.Millisecond)
 		defer ticker.Stop()
@@ -205,7 +202,7 @@ func main() {
 				continue
 			}
 
-			fyne.CurrentApp().Driver().RunOnMainThread(func() {
+			myApp.Lifecycle().RunOnMain(func() {  // ← правильный способ в новых Fyne
 				added := 0
 				for _, m := range batch {
 					if m.ID <= lastID {
@@ -225,7 +222,6 @@ func main() {
 				if added > 0 {
 					chatList.Refresh()
 
-					// автоскролл только если почти внизу
 					threshold := float32(120)
 					if chatScroll.Offset.Y >= chatScroll.Content.MinSize().Height-chatScroll.Size().Height-threshold {
 						chatScroll.ScrollToBottom()
@@ -235,7 +231,7 @@ func main() {
 		}
 	}()
 
-	// Создание шаблона сообщения (вызывается один раз)
+	// Шаблон одного сообщения
 	createItem := func() fyne.CanvasObject {
 		defaultAv := canvas.NewCircle(color.RGBA{R: 60, G: 90, B: 180, A: 255})
 		avWrap := container.NewGridWrap(fyne.NewSize(avatarDpSize+8, avatarDpSize+8), defaultAv)
@@ -250,7 +246,6 @@ func main() {
 		return container.NewHBox(avWrap, vbox)
 	}
 
-	// Обновление элемента списка
 	updateItem := func(id widget.ListItemID, obj fyne.CanvasObject) {
 		m := chatMessages[id]
 		hbox := obj.(*fyne.Container).Objects[0].(*fyne.Container) // HBox
@@ -276,8 +271,7 @@ func main() {
 		updateItem,
 	)
 
-	chatScroll = container.NewScroll(chatList)
-	chatScroll.SetDirection(fyne.ScrollVerticalOnly) // ← только вертикаль
+	chatScroll = container.NewVScroll(chatList) // ← только вертикальный скролл по умолчанию
 
 	msgInput := widget.NewEntry()
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
@@ -317,7 +311,7 @@ func main() {
 				}),
 				widget.NewLabel(name),
 			),
-			container.NewPadded(container.NewBorder(nil, nil, nil, sendBtn, msgInput)),
+			container.NewBorder(nil, nil, nil, sendBtn, msgInput),
 			nil, nil,
 			chatScroll,
 		)
@@ -325,8 +319,6 @@ func main() {
 		contentArea.Objects = []fyne.CanvasObject{chatUI}
 		contentArea.Refresh()
 	}
-
-	// ------------------- остальной код (профиль, меню, список чатов) -------------------
 
 	showAddChat := func() {
 		rIn := widget.NewEntry()
@@ -380,10 +372,11 @@ func main() {
 			var currAv fyne.CanvasObject = widget.NewLabel("Нет аватара")
 			if b64 := prefs.String("avatar_data"); b64 != "" {
 				if img := getOrCreateAvatarImage(b64); img != nil {
-					img2 := canvas.NewImageFromImage(img.Resource) // копия для отображения
-					img2.FillMode = canvas.ImageFillContain
-					img2.SetMinSize(fyne.NewSize(96, 96))
-					currAv = img2
+					// создаём копию для показа в профиле (чтобы не менять оригинал в кэше)
+					copyImg := canvas.NewImageFromImage(img.Image)
+					copyImg.FillMode = canvas.ImageFillContain
+					copyImg.SetMinSize(fyne.NewSize(96, 96))
+					currAv = copyImg
 				}
 			}
 
@@ -406,7 +399,12 @@ func main() {
 	)
 	drawer = dialog.NewCustom("Меню", "Закрыть", container.NewPadded(menuContent), window)
 
-	refreshMainList := func() {
+	// Определяем здесь, чтобы функции могли их видеть
+	var mainList *fyne.Container
+	var mainScroll *container.Scroll
+	var contentArea *fyne.Container
+
+	refreshMainList = func() {
 		mainList.Objects = nil
 		saved := strings.Split(prefs.String("chat_list"), "|")
 		for _, s := range saved {
@@ -414,6 +412,9 @@ func main() {
 				continue
 			}
 			p := strings.Split(s, ":")
+			if len(p) < 2 {
+				continue
+			}
 			n, pass := p[0], p[1]
 			mainList.Add(widget.NewButtonWithIcon(n, theme.MailComposeIcon(), func() {
 				openChat(n, pass)
@@ -438,11 +439,9 @@ func main() {
 		contentArea.Refresh()
 	}
 
-	// глобальные элементы
-	chatBox := container.NewVBox() // больше не используется
-	mainList := container.NewVBox()
-	mainScroll := container.NewVScroll(mainList)
-	contentArea := container.NewStack()
+	mainList = container.NewVBox()
+	mainScroll = container.NewVScroll(mainList)
+	contentArea = container.NewStack()
 
 	refreshMainList()
 	window.SetContent(contentArea)
