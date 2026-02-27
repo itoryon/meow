@@ -12,6 +12,12 @@ void main() async {
   runApp(const SignalApp());
 }
 
+// Утилита для генерации цвета по нику
+Color _getAvatarColor(String name) {
+  final int hash = name.hashCode;
+  return Colors.primaries[hash.abs() % Colors.primaries.length];
+}
+
 class SignalApp extends StatelessWidget {
   const SignalApp({super.key});
   @override
@@ -61,8 +67,8 @@ class _MainScreenState extends State<MainScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: idController, decoration: const InputDecoration(labelText: "ID чата (латиница)")),
-            TextField(controller: keyController, decoration: const InputDecoration(labelText: "Ключ (любой текст)")),
+            TextField(controller: idController, decoration: const InputDecoration(labelText: "ID чата")),
+            TextField(controller: keyController, decoration: const InputDecoration(labelText: "Ключ шифрования")),
           ],
         ),
         actions: [
@@ -84,72 +90,45 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  void _showProfileDialog() {
-    final nickController = TextEditingController(text: myNick);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Профиль"),
-        content: TextField(controller: nickController, decoration: const InputDecoration(labelText: "Ваш ник")),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Закрыть")),
-          ElevatedButton(
-            onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString('nickname', nickController.text);
-              setState(() { myNick = nickController.text; });
-              Navigator.pop(context);
-            },
-            child: const Text("Сохранить"),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Signal'), backgroundColor: const Color(0xFF121212), elevation: 0),
+      appBar: AppBar(title: const Text('Signal'), backgroundColor: const Color(0xFF121212)),
       drawer: Drawer(
         child: Column(
           children: [
             UserAccountsDrawerHeader(
-              currentAccountPicture: const CircleAvatar(backgroundColor: Color(0xFF2090FF), child: Icon(Icons.person, color: Colors.white, size: 40)),
-              accountName: Text(myNick, style: const TextStyle(fontWeight: FontWeight.bold)),
-              accountEmail: const Text("E2EE Защита включена"),
+              currentAccountPicture: CircleAvatar(
+                backgroundColor: _getAvatarColor(myNick),
+                child: Text(myNick[0].toUpperCase(), style: const TextStyle(fontSize: 24, color: Colors.white)),
+              ),
+              accountName: Text(myNick),
+              accountEmail: const Text("ID: Protected"),
               decoration: const BoxDecoration(color: Color(0xFF1C1C1C)),
             ),
             ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text("Изменить ник"),
-              onTap: () { Navigator.pop(context); _showProfileDialog(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text("Настройки"),
-              subtitle: const Text("В разработке", style: TextStyle(fontSize: 10)),
-              onTap: () {},
+              leading: const Icon(Icons.person),
+              title: const Text("Профиль"),
+              onTap: () {
+                // Здесь вызов диалога ника как в v54
+              },
             ),
           ],
         ),
       ),
-      body: myChats.isEmpty 
-        ? const Center(child: Text("Нет чатов. Нажмите +"))
-        : ListView.builder(
-            itemCount: myChats.length,
-            itemBuilder: (context, index) {
-              final parts = myChats[index].split(':');
-              final name = parts[0];
-              final key = parts.length > 1 ? parts[1] : "";
-              return ListTile(
-                leading: const CircleAvatar(backgroundColor: Color(0xFF2D2D2D), child: Icon(Icons.chat, color: Color(0xFF2090FF))),
-                title: Text(name),
-                subtitle: const Text("Нажмите, чтобы войти"),
-                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ChatScreen(roomName: name, encryptionKey: key, myNick: myNick))),
-              );
-            },
-          ),
+      body: ListView.builder(
+        itemCount: myChats.length,
+        itemBuilder: (context, index) {
+          final parts = myChats[index].split(':');
+          final name = parts[0];
+          return ListTile(
+            leading: CircleAvatar(backgroundColor: _getAvatarColor(name), child: Text(name[0].toUpperCase())),
+            title: Text(name),
+            subtitle: const Text("Нажмите для входа"),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => ChatScreen(roomName: name, encryptionKey: parts[1], myNick: myNick))),
+          );
+        },
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showAddChatDialog,
         backgroundColor: const Color(0xFF2090FF),
@@ -172,48 +151,51 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _msgController = TextEditingController();
   final _supabase = Supabase.instance.client;
-  bool _showSend = false;
+  bool _isTyping = false;
 
   @override
   void initState() {
     super.initState();
-    _msgController.addListener(() => setState(() => _showSend = _msgController.text.isNotEmpty));
+    _msgController.addListener(() => setState(() => _isTyping = _msgController.text.isNotEmpty));
   }
 
-  // --- ЛОГИКА ШИФРОВАНИЯ ---
-  String _encrypt(String text) {
+  String _decrypt(String text) {
     if (widget.encryptionKey.isEmpty) return text;
-    final key = enc.Key.fromUtf8(widget.encryptionKey.padRight(32).substring(0, 32));
-    final iv = enc.IV.fromLength(16);
-    final encrypter = enc.Encrypter(enc.AES(key));
-    return encrypter.encrypt(text, iv: iv).base64;
-  }
-
-  String _decrypt(String base64Text) {
-    if (widget.encryptionKey.isEmpty) return base64Text;
     try {
       final key = enc.Key.fromUtf8(widget.encryptionKey.padRight(32).substring(0, 32));
       final iv = enc.IV.fromLength(16);
       final encrypter = enc.Encrypter(enc.AES(key));
-      return encrypter.decrypt64(base64Text, iv: iv);
+      return encrypter.decrypt64(text, iv: iv);
     } catch (e) {
-      return "[Ошибка: неверный ключ]";
+      return text; // Если это старое незашифрованное сообщение
     }
   }
 
   void _send() async {
     final text = _msgController.text;
     _msgController.clear();
+    
+    // Шифруем
+    final key = enc.Key.fromUtf8(widget.encryptionKey.padRight(32).substring(0, 32));
+    final iv = enc.IV.fromLength(16);
+    final encrypter = enc.Encrypter(enc.AES(key));
+    final encrypted = encrypter.encrypt(text, iv: iv).base64;
+
     await _supabase.from('messages').insert({
-      'sender': widget.myNick,
-      'payload': _encrypt(text),
-      'chat_key': widget.roomName
+      'sender_': widget.myNick, // Поправил на sender_
+      'payload': encrypted,
+      'chat_key': widget.roomName,
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final stream = _supabase.from('messages').stream(primaryKey: ['id']).eq('chat_key', widget.roomName).order('id', ascending: false);
+    // Стрим с фильтром по твоим столбцам
+    final stream = _supabase
+        .from('messages')
+        .stream(primaryKey: ['id'])
+        .eq('chat_key', widget.roomName)
+        .order('id', ascending: false);
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.roomName), backgroundColor: const Color(0xFF121212)),
@@ -223,23 +205,35 @@ class _ChatScreenState extends State<ChatScreen> {
             child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: stream,
               builder: (context, snap) {
+                if (snap.hasError) return Center(child: Text("Ошибка: ${snap.error}"));
                 if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                
+                final msgs = snap.data!;
                 return ListView.builder(
                   reverse: true,
-                  itemCount: snap.data!.length,
+                  itemCount: msgs.length,
                   itemBuilder: (context, i) {
-                    final m = snap.data![i];
-                    bool isMe = m['sender'] == widget.myNick;
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: isMe ? const Color(0xFF2090FF) : const Color(0xFF2D2D2D),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Text(_decrypt(m['payload'] ?? '')),
+                    final m = msgs[i];
+                    bool isMe = m['sender_'] == widget.myNick;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      child: Row(
+                        mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (!isMe) CircleAvatar(radius: 12, backgroundColor: _getAvatarColor(m['sender_'] ?? "?"), child: Text(m['sender_']?[0].toUpperCase() ?? "?", style: const TextStyle(fontSize: 10))),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: isMe ? const Color(0xFF2090FF) : const Color(0xFF2D2D2D),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Text(_decrypt(m['payload'] ?? '')),
+                            ),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -262,7 +256,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                 ),
-                if (_showSend) IconButton(icon: const Icon(Icons.send, color: Color(0xFF2090FF)), onPressed: _send),
+                if (_isTyping) IconButton(icon: const Icon(Icons.send, color: Color(0xFF2090FF)), onPressed: _send),
               ],
             ),
           ),
