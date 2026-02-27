@@ -35,7 +35,7 @@ const (
 	supabaseKey  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlsc3poZG1xeHNvaXhjZWZlb3FhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2NjA4NDMsImV4cCI6MjA3NjIzNjg0M30.aJF9c3RaNvAk4_9nLYhQABH3pmYUcZ0q2udf2LoA6Sc"
 	avatarSize   = 96
 	jpegQuality  = 72
-	avatarDpSize = 48
+	avatarDpSize = 48 // размер аватарки на экране
 )
 
 type Message struct {
@@ -103,7 +103,7 @@ func createAvatarThumbnail(r io.Reader) (string, error) {
 	newH := int(float64(bounds.Dy()) * ratio)
 
 	resized := image.NewRGBA(image.Rect(0, 0, newW, newH))
-	draw.BiLinear.Scale(resized, resized.Bounds(), img, img.Bounds(), draw.Src, nil)
+	draw.Bilinear.Scale(resized, resized.Bounds(), img, img.Bounds(), draw.Src, nil)
 
 	var buf bytes.Buffer
 	err = jpeg.Encode(&buf, resized, &jpeg.Options{Quality: jpegQuality})
@@ -141,7 +141,7 @@ func getOrCreateAvatarImage(b64 string) *canvas.Image {
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.meow") // ← изменил на ваш app-id
+	myApp := app.NewWithID("com.itoryon.meow")
 	window := myApp.NewWindow("Imperor")
 	window.Resize(fyne.NewSize(450, 800))
 
@@ -153,7 +153,7 @@ func main() {
 	var chatList *widget.List
 	var chatScroll *container.Scroll
 
-	// Получение сообщений (фон)
+	// Фоновая загрузка сообщений
 	go func() {
 		for {
 			if currentRoom == "" {
@@ -179,7 +179,6 @@ func main() {
 					incomingMu.Lock()
 					incomingMessages = append(incomingMessages, msgs...)
 					incomingMu.Unlock()
-					// просто триггер — обновление будет в тикере
 				}
 			}
 
@@ -187,7 +186,7 @@ func main() {
 		}
 	}()
 
-	// Плавное добавление в UI
+	// Плавное добавление в UI (тикер + fyne.Do)
 	go func() {
 		ticker := time.NewTicker(450 * time.Millisecond)
 		defer ticker.Stop()
@@ -202,7 +201,7 @@ func main() {
 				continue
 			}
 
-			myApp.Lifecycle().RunOnMain(func() {  // ← правильный способ в новых Fyne
+			fyne.Do(func() { // ← это правильно для Fyne 2.6+
 				added := 0
 				for _, m := range batch {
 					if m.ID <= lastID {
@@ -231,7 +230,7 @@ func main() {
 		}
 	}()
 
-	// Шаблон одного сообщения
+	// Шаблон строки в списке
 	createItem := func() fyne.CanvasObject {
 		defaultAv := canvas.NewCircle(color.RGBA{R: 60, G: 90, B: 180, A: 255})
 		avWrap := container.NewGridWrap(fyne.NewSize(avatarDpSize+8, avatarDpSize+8), defaultAv)
@@ -252,7 +251,7 @@ func main() {
 		avWrap := hbox.Objects[0].(*fyne.Container)
 		vbox := hbox.Objects[1].(*fyne.Container)
 
-		avObj := canvas.NewCircle(color.RGBA{R: 60, G: 90, B: 180, A: 255})
+		var avObj fyne.CanvasObject = canvas.NewCircle(color.RGBA{R: 60, G: 90, B: 180, A: 255})
 		if m.AvatarBase64 != "" {
 			if cached := getOrCreateAvatarImage(m.AvatarBase64); cached != nil {
 				avObj = cached
@@ -271,7 +270,7 @@ func main() {
 		updateItem,
 	)
 
-	chatScroll = container.NewVScroll(chatList) // ← только вертикальный скролл по умолчанию
+	chatScroll = container.NewVScroll(chatList)
 
 	msgInput := widget.NewEntry()
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
@@ -372,7 +371,6 @@ func main() {
 			var currAv fyne.CanvasObject = widget.NewLabel("Нет аватара")
 			if b64 := prefs.String("avatar_data"); b64 != "" {
 				if img := getOrCreateAvatarImage(b64); img != nil {
-					// создаём копию для показа в профиле (чтобы не менять оригинал в кэше)
 					copyImg := canvas.NewImageFromImage(img.Image)
 					copyImg.FillMode = canvas.ImageFillContain
 					copyImg.SetMinSize(fyne.NewSize(96, 96))
@@ -399,7 +397,7 @@ func main() {
 	)
 	drawer = dialog.NewCustom("Меню", "Закрыть", container.NewPadded(menuContent), window)
 
-	// Определяем здесь, чтобы функции могли их видеть
+	// ОБЪЯВЛЯЕМ ЗДЕСЬ — чтобы функции видели эти переменные
 	var mainList *fyne.Container
 	var mainScroll *container.Scroll
 	var contentArea *fyne.Container
