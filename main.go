@@ -43,7 +43,7 @@ type Message struct {
 type ChatMessage struct {
 	Sender string
 	Text   string
-	Avatar string
+	IsMe   bool
 }
 
 var (
@@ -79,40 +79,15 @@ func fastCrypt(text, key string, decrypt bool) string {
 }
 
 func main() {
-	myApp := app.NewWithID("com.itoryon.meow.v48")
+	myApp := app.NewWithID("com.itoryon.meow.v49")
 	myApp.Settings().SetTheme(theme.DarkTheme())
-	window := myApp.NewWindow("Imperor")
+	window := myApp.NewWindow("Signal Clone")
 	window.Resize(fyne.NewSize(450, 800))
 	prefs := myApp.Preferences()
+	myNick := prefs.StringWithFallback("nickname", "User")
 	contentArea = container.NewStack()
 
-	showFullProfile := func(name, b64 string) {
-		var imgObj fyne.CanvasObject
-		if b64 != "" {
-			data, _ := base64.StdEncoding.DecodeString(b64)
-			rawImg, _, _ := image.Decode(bytes.NewReader(data))
-			ci := canvas.NewImageFromImage(rawImg)
-			ci.FillMode = canvas.ImageFillContain
-			imgObj = ci
-		} else {
-			imgObj = canvas.NewCircle(color.RGBA{100, 100, 100, 255})
-		}
-		closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
-			contentArea.Objects = contentArea.Objects[:len(contentArea.Objects)-1]
-			contentArea.Refresh()
-		})
-		profileUI := container.NewMax(
-			canvas.NewRectangle(color.NRGBA{0, 0, 0, 240}),
-			container.NewBorder(container.NewHBox(layout.NewSpacer(), closeBtn), nil, nil, nil,
-				container.NewCenter(container.NewVBox(
-					container.NewGridWrap(fyne.NewSize(300, 300), imgObj),
-					widget.NewLabelWithStyle(name, fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-				))),
-		)
-		contentArea.Objects = append(contentArea.Objects, profileUI)
-		contentArea.Refresh()
-	}
-
+	// Поток получения
 	go func() {
 		for {
 			if currentRoom == "" { time.Sleep(time.Second); continue }
@@ -133,8 +108,9 @@ func main() {
 		}
 	}()
 
+	// Рендерер списка
 	go func() {
-		ticker := time.NewTicker(400 * time.Millisecond)
+		ticker := time.NewTicker(300 * time.Millisecond)
 		for range ticker.C {
 			incomingMu.Lock()
 			if len(incomingMessages) == 0 { incomingMu.Unlock(); continue }
@@ -147,7 +123,7 @@ func main() {
 				chatMessages = append(chatMessages, ChatMessage{
 					Sender: m.Sender,
 					Text:   fastCrypt(m.Payload, currentPass, true),
-					Avatar: m.SenderAvatar,
+					IsMe:   m.Sender == myNick,
 				})
 			}
 			chatList.Refresh()
@@ -155,40 +131,62 @@ func main() {
 		}
 	}()
 
+	// Виджет списка как в Signal
 	chatList = widget.NewList(
 		func() int { return len(chatMessages) },
 		func() fyne.CanvasObject {
-			btn := widget.NewButton("", nil)
-			btn.Importance = widget.LowImportance
-			av := container.NewStack(container.NewGridWrap(fyne.NewSize(40, 40), canvas.NewCircle(color.RGBA{60, 90, 180, 255})), btn)
 			lbl := widget.NewLabel("")
 			lbl.Wrapping = fyne.TextWrapWord
-			return container.NewHBox(av, container.NewVBox(canvas.NewText("", theme.DisabledColor()), lbl))
+			bg := canvas.NewRectangle(color.RGBA{40, 45, 55, 255})
+			bubble := container.NewStack(bg, container.NewPadded(lbl))
+			return container.NewHBox(layout.NewSpacer(), bubble, layout.NewSpacer())
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			m := chatMessages[id]
 			hbox := obj.(*fyne.Container)
-			hbox.Objects[0].(*fyne.Container).Objects[1].(*widget.Button).OnTapped = func() { showFullProfile(m.Sender, m.Avatar) }
-			vbox := hbox.Objects[1].(*fyne.Container)
-			vbox.Objects[0].(*canvas.Text).Text = m.Sender
-			vbox.Objects[1].(*widget.Label).SetText(m.Text)
+			bubbleStack := hbox.Objects[1].(*fyne.Container)
+			bg := bubbleStack.Objects[0].(*canvas.Rectangle)
+			lbl := bubbleStack.Objects[1].(*fyne.Container).Objects[0].(*widget.Label)
+
+			lbl.SetText(m.Text)
+			if m.IsMe {
+				bg.FillColor = color.RGBA{31, 115, 235, 255} // Синий Signal
+				hbox.Objects[0].Show() // Spacer слева
+				hbox.Objects[2].Hide() // Spacer справа нет
+			} else {
+				bg.FillColor = color.RGBA{60, 60, 70, 255} // Серый Signal
+				hbox.Objects[0].Hide() // Spacer слева нет
+				hbox.Objects[2].Show() // Spacer справа
+			}
+			hbox.Refresh()
 		},
 	)
 	chatScroll = container.NewVScroll(chatList)
 
 	msgInput := widget.NewEntry()
-	msgInput.SetPlaceHolder("Signal Message")
+	msgInput.SetPlaceHolder("Сообщение Signal")
+	
 	sendBtn := widget.NewButtonWithIcon("", theme.MailSendIcon(), func() {
 		if msgInput.Text == "" || currentRoom == "" { return }
-		t := msgInput.Text; msgInput.SetText("")
+		txt := msgInput.Text
+		msgInput.SetText("")
 		go func() {
-			m := Message{Sender: prefs.StringWithFallback("nickname", "User"), ChatKey: currentRoom, Payload: fastCrypt(t, currentPass, false), SenderAvatar: prefs.String("avatar_data")}
+			m := Message{
+				Sender: myNick,
+				ChatKey: currentRoom,
+				Payload: fastCrypt(txt, currentPass, false),
+				SenderAvatar: prefs.String("avatar_data"),
+			}
 			b, _ := json.Marshal(m)
 			req, _ := http.NewRequest("POST", supabaseURL+"/rest/v1/messages", bytes.NewBuffer(b))
 			req.Header.Set("apikey", supabaseKey)
 			req.Header.Set("Authorization", "Bearer "+supabaseKey)
 			req.Header.Set("Content-Type", "application/json")
-			http.DefaultClient.Do(req)
+			req.Header.Set("Prefer", "return=minimal")
+			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+			if err != nil || resp.StatusCode >= 400 {
+				fmt.Println("Ошибка отправки")
+			}
 		}()
 	})
 
@@ -204,30 +202,29 @@ func main() {
 	}
 
 	refreshMainList = func() {
-		mainContent := container.NewVBox()
+		listCont := container.NewVBox()
 		for _, s := range strings.Split(prefs.String("chat_list"), "|") {
 			if !strings.Contains(s, ":") { continue }
 			p := strings.Split(s, ":")
-			mainContent.Add(widget.NewButtonWithIcon(p[0], theme.MailComposeIcon(), func() { openChat(p[0], p[1]) }))
+			btn := widget.NewButton(p[0], func() { openChat(p[0], p[1]) })
+			btn.Importance = widget.LowImportance
+			listCont.Add(container.NewPadded(btn))
 		}
+		
 		fab := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
-			r, p := widget.NewEntry(), widget.NewEntry()
-			dialog.ShowForm("New Chat", "Join", "Cancel", []*widget.FormItem{{Text: "ID", Widget: r}, {Text: "Key", Widget: p}}, func(ok bool) {
-				if ok { prefs.SetString("chat_list", prefs.String("chat_list")+"|"+r.Text+":"+p.Text); openChat(r.Text, p.Text) }
+			id, key := widget.NewEntry(), widget.NewEntry()
+			dialog.ShowForm("Новый чат", "Начать", "Отмена", []*widget.FormItem{{Text: "ID", Widget: id}, {Text: "Ключ", Widget: key}}, func(ok bool) {
+				if ok { prefs.SetString("chat_list", prefs.String("chat_list")+"|"+id.Text+":"+key.Text); openChat(id.Text, key.Text) }
 			}, window)
 		})
+		
 		hubUI := container.NewBorder(
 			container.NewHBox(widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
-				nick := widget.NewEntry(); nick.SetText(prefs.StringWithFallback("nickname", "User"))
-				dialog.ShowCustomConfirm("Settings", "Save", "Close", container.NewVBox(widget.NewLabel("Name"), nick, widget.NewButton("Avatar", func() {
-					dialog.ShowFileOpen(func(r fyne.URIReadCloser, _ error) {
-						if r == nil { return }
-						d, _ := io.ReadAll(r); prefs.SetString("avatar_data", base64.StdEncoding.EncodeToString(d))
-					}, window)
-				})), func(ok bool) { if ok { prefs.SetString("nickname", nick.Text) } }, window)
-			}), widget.NewLabelWithStyle("IMPEROR", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
+				nick := widget.NewEntry(); nick.SetText(myNick)
+				dialog.ShowCustomConfirm("Профиль", "Save", "X", nick, func(ok bool) { if ok { prefs.SetString("nickname", nick.Text); myNick = nick.Text } }, window)
+			}), widget.NewLabelWithStyle("Signal", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
 			nil, nil, nil,
-			container.NewStack(container.NewVScroll(mainContent), container.NewBorder(nil, container.NewHBox(layout.NewSpacer(), container.NewPadded(fab)), nil, nil)),
+			container.NewStack(container.NewVScroll(listCont), container.NewBorder(nil, container.NewHBox(layout.NewSpacer(), container.NewPadded(fab)), nil, nil)),
 		)
 		contentArea.Objects = []fyne.CanvasObject{hubUI}; contentArea.Refresh()
 	}
