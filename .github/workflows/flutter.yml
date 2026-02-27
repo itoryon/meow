@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Java
         uses: actions/setup-java@v3
         with:
@@ -19,15 +19,24 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          
+
       - name: Recreate Project Structure
         run: |
+          # Временно убираем наш код, чтобы flutter create не ругался
           mv lib lib_backup
           mv pubspec.yaml pubspec_backup
+          
+          # Генерируем структуру проекта (папки android, ios и т.д.)
           flutter create --org com.itoryon.meow --project-name imperor_signal .
+          
+          # Возвращаем наш код и конфиг на место
           rm -rf lib
           mv lib_backup lib
           mv pubspec_backup pubspec.yaml
+          
+          # ДОБАВЛЯЕМ РАЗРЕШЕНИЕ НА ИНТЕРНЕТ:
+          # Эта команда находит строку <application и вставляет перед ней разрешение
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
